@@ -462,11 +462,15 @@ See [context-management.md](context-management.md) for full design.
 - Thinking mode gets expanded context with pre-think compaction
 - GPU memory monitoring to prevent OOM (reduce context or skip thinking when constrained)
 
-### C10.3 — Context Compaction Engine
+### C10.3 — Context Compaction & Overflow Recovery
 - Tiered summarization: checkpoint summaries (oldest) → recent summary → active messages (verbatim)
 - Compaction triggers at 60% and 80% of context budget
 - LLM-generated checkpoint summaries preserving decisions, entities, unresolved items
 - Checkpoint expansion on demand if LLM needs detail from old segment
+- **Transparent overflow recovery**: if output exceeds generation reserve, capture partial output, compact, re-send with continuation prompt — user never sees the seam
+- **Chunked generation**: proactive splitting for long outputs (code, plans, detailed explanations)
+- **Output deduplication**: sentence-level fuzzy matching to remove overlap across chunks, with coherence smoothing pass
+- **Continuation fillers**: natural bridging phrases ("Bear with me...", "...and continuing with that...") streamed during recovery latency
 
 ### C10.4 — Hardware-Agnostic Model Selection
 - Auto-recommend fast/standard/thinking/embedding models based on VRAM tier
@@ -478,3 +482,12 @@ See [context-management.md](context-management.md) for full design.
 - `context_metrics` table tracking token budgets, utilization, compactions per request
 - `context_checkpoints` table for conversation history compression
 - Nightly evolution reviews metrics to tune default windows and thresholds
+
+### C10.6 — User Interruption Handling
+- Detect incoming messages during active generation (non-blocking poll)
+- Classify interrupt type: stop, redirect, clarify, refine (pattern-based, no LLM)
+- Stop: halt immediately, save partial output, natural acknowledgment
+- Redirect: halt, checkpoint partial, begin new request with prior context
+- Clarify: pause, answer inline, offer to resume
+- Refine: halt, re-generate with refinement instruction
+- Voice interruption: echo cancellation, listen-during-playback, wake word detection mid-output
