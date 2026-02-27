@@ -18,6 +18,7 @@ A self-evolving AI assistant system built on top of [Open WebUI](https://github.
 - **Honest personality** — pushes back on bad ideas, challenges users in tutoring mode, never sycophantic
 - **Anti-hallucination** — internal confidence scoring, grounding loops, mistake tracking and learning
 - **Personal knowledge access** — indexes files, email, messages, calendar with strict user-scoped privacy
+- **Smart lists** — grocery, to-do, shopping lists across multiple backends with per-list permissions
 
 ## Architecture
 
@@ -76,6 +77,7 @@ atlas-cortex/
 │   ├── personality.md         # Honesty system, pushback, tutoring mode
 │   ├── grounding.md           # Anti-hallucination, confidence scoring, mistake learning
 │   ├── knowledge-access.md    # File/email/message indexing, user-scoped privacy
+│   ├── lists.md               # Multi-backend lists, permissions, resolution
 │   ├── avatar-system.md       # Lip-sync avatars, visemes, multi-skin
 │   ├── phases.md              # Implementation phases and dependencies
 │   └── infrastructure.md      # Current server/container topology

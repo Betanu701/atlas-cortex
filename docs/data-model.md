@@ -312,6 +312,32 @@ CREATE INDEX idx_mistakes_category ON mistake_log(mistake_category);
 CREATE INDEX idx_mistakes_unresolved ON mistake_log(resolved) WHERE resolved = FALSE;
 ```
 
+### list_registry
+
+Multi-backend list management with per-list permissions.
+
+```sql
+CREATE TABLE list_registry (
+    id TEXT PRIMARY KEY,                -- "grocery", "christmas-2026"
+    display_name TEXT NOT NULL,         -- "Grocery List"
+    backend TEXT NOT NULL,              -- "ha_todo", "nextcloud_caldav", "grocy", "file", "todoist"
+    backend_config TEXT NOT NULL,       -- JSON: connection details
+    owner_id TEXT NOT NULL,
+    access_level TEXT DEFAULT 'private', -- "public", "household", "shared", "private"
+    shared_with TEXT DEFAULT '[]',      -- JSON: user_ids
+    can_add TEXT DEFAULT '[]',          -- JSON: user_ids or ["*"]
+    can_view TEXT DEFAULT '[]',         -- JSON: user_ids or ["*"]
+    can_remove TEXT DEFAULT '[]',       -- JSON: user_ids
+    aliases TEXT DEFAULT '[]',          -- JSON: ["groceries", "shopping", "food list"]
+    category TEXT,                      -- "grocery", "todo", "shopping", "chores", "wishlist"
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_accessed TIMESTAMP
+);
+
+CREATE INDEX idx_lists_owner ON list_registry(owner_id);
+CREATE INDEX idx_lists_category ON list_registry(category);
+```
+
 ## Entity-Relationship Diagram
 
 ```
