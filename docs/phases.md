@@ -392,6 +392,7 @@ C5.1 (Embedding Model) ──▶ C5.2 (ChromaDB) ──────────�
 | C1.3 | Fetch HA devices and build initial pattern set |
 | C3.1 | Build speaker ID sidecar container |
 | C5.1 | Pull embedding model into Ollama, verify API |
+| C9.1 | Build backup/restore CLI tool |
 
 ## Blockers
 
@@ -406,3 +407,34 @@ C5.1 (Embedding Model) ──▶ C5.2 (ChromaDB) ──────────�
 ## External Projects (separate repos)
 
 - [ ] **Document Classification System** — standalone service that classifies documents by type, sensitivity, and access level. Consumed by Atlas Cortex (C8) for automatic `access_level` assignment, PII detection, and content categorization. Should support: file type detection, content analysis, sensitivity scoring, category tagging (financial, medical, personal, work, household). Could use a fine-tuned small model or rule-based engine. Lives outside this project as a general-purpose utility.
+
+---
+
+## Phase C9: Backup & Restore
+
+See [backup-restore.md](backup-restore.md) for full design.
+
+### C9.1 — Backup/Restore CLI Tool
+- `python -m cortex.backup create` — manual snapshot
+- `python -m cortex.backup restore --latest daily` — one-command restore
+- SQLite online backup (no locks, consistent snapshot)
+- ChromaDB directory copy
+- Config and avatar skins included
+- Compressed tar.gz archives
+
+### C9.2 — Automated Nightly Backups
+- Integrated into nightly evolution job (runs first, before any changes)
+- Retention: 7 daily, 4 weekly, 12 monthly
+- Pre-operation safety snapshots (before migrations, bulk imports, upgrades)
+- Disk space monitoring and backup health checks
+
+### C9.3 — NAS Offsite Sync
+- rsync to NAS share after each backup
+- Ensures recovery even if Overwatch server fails completely
+- Configurable remote path via cortex.env
+
+### C9.4 — Voice-Accessible Backup Management
+- "Atlas, back yourself up" → manual backup
+- "Atlas, restore from yesterday" → restore with safety backup first
+- "Atlas, when was your last backup?" → query backup_log
+- Proactive warnings if backup health degrades

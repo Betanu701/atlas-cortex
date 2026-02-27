@@ -71,7 +71,8 @@ atlas-cortex/
 ├── README.md                  # This file
 ├── docs/
 │   ├── architecture.md        # Detailed system architecture
-│   ├── data-model.md          # Database schema and relationships
+│   ├── data-model.md          # Database schema (v2, normalized)
+│   ├── backup-restore.md      # Automated backups, one-command restore
 │   ├── memory-system.md       # HOT/COLD memory with vector search
 │   ├── user-profiles.md       # Age-awareness, onboarding, profile evolution
 │   ├── personality.md         # Honesty system, pushback, tutoring mode
@@ -118,6 +119,19 @@ See [docs/phases.md](docs/phases.md) for detailed task breakdown and dependency 
 - [Open WebUI](https://github.com/open-webui/open-webui) v0.8.5+
 - [Home Assistant](https://www.home-assistant.io/) with long-lived access token
 - Python 3.11+
+
+## Backup & Restore
+
+Atlas backs itself up nightly (7 daily, 4 weekly, 12 monthly retention). One-command restore:
+
+```bash
+python -m cortex.backup restore --latest daily    # restore from latest daily
+python -m cortex.backup restore path/to/backup.tar.gz  # restore specific backup
+```
+
+Or just ask: *"Atlas, back yourself up"* / *"Atlas, restore from yesterday"*
+
+See [docs/backup-restore.md](docs/backup-restore.md) for full details.
 
 ## License
 
