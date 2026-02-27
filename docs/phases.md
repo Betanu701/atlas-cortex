@@ -325,6 +325,14 @@ Personal file/message/calendar indexing with strict user-scoped access control. 
 - On-demand reindex triggered by user request
 - Change detection via content hash (only re-embed modified docs)
 
+### C8.6 — List Management
+- List registry table with backend, permissions, aliases
+- Backend adapters: HA to-do, Nextcloud CalDAV, file-based, Grocy, Todoist
+- List resolution: explicit name → category inference → conversation context → memory → ask
+- Permission enforcement: public lists allow anyone, private/shared respect access control
+- Auto-discovery of lists from HA, Nextcloud, file paths during nightly job
+- Remember routing preferences so user never repeats a clarification
+
 ---
 
 ## Dependency Graph
@@ -392,3 +400,9 @@ C5.1 (Embedding Model) ──▶ C5.2 (ChromaDB) ──────────�
 - **C4.x** requires self-learning, voice identity, and memory all operational
 - **C5.2+** requires embedding model (C5.1) operational
 - **C6.x** requires both memory (C5) and speaker-id (C3) for full functionality
+
+---
+
+## External Projects (separate repos)
+
+- [ ] **Document Classification System** — standalone service that classifies documents by type, sensitivity, and access level. Consumed by Atlas Cortex (C8) for automatic `access_level` assignment, PII detection, and content categorization. Should support: file type detection, content analysis, sensitivity scoring, category tagging (financial, medical, personal, work, household). Could use a fine-tuned small model or rule-based engine. Lives outside this project as a general-purpose utility.
