@@ -611,6 +611,116 @@ CREATE VIRTUAL TABLE knowledge_fts USING fts5(
 
 ---
 
+### backup_log
+
+Tracks all backup operations. See [backup-restore.md](backup-restore.md).
+
+```sql
+CREATE TABLE backup_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    archive_path TEXT NOT NULL,
+    backup_type TEXT NOT NULL,          -- 'daily' | 'weekly' | 'monthly' | 'manual'
+    size_bytes INTEGER,
+    db_row_count INTEGER,
+    chroma_doc_count INTEGER,
+    duration_ms INTEGER,
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### hardware_profile
+
+Detected hardware capabilities. See [context-management.md](context-management.md).
+
+```sql
+CREATE TABLE hardware_profile (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    gpu_vendor TEXT,
+    gpu_name TEXT,
+    vram_mb INTEGER,
+    is_igpu BOOLEAN DEFAULT FALSE,
+    cpu_model TEXT,
+    cpu_cores INTEGER,
+    ram_mb INTEGER,
+    disk_free_gb REAL,
+    os_name TEXT,
+    limits_json TEXT,
+    is_current BOOLEAN DEFAULT TRUE
+);
+
+CREATE UNIQUE INDEX idx_hw_current ON hardware_profile(is_current) WHERE is_current = TRUE;
+```
+
+### model_config
+
+Active model assignments per role.
+
+```sql
+CREATE TABLE model_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL UNIQUE,          -- 'fast' | 'standard' | 'thinking' | 'embedding'
+    model_name TEXT NOT NULL,
+    context_default INTEGER,
+    context_max INTEGER,
+    temperature REAL DEFAULT 0.7,
+    auto_selected BOOLEAN DEFAULT TRUE,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### context_checkpoints
+
+Compressed conversation history segments.
+
+```sql
+CREATE TABLE context_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    checkpoint_number INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    summary_tokens INTEGER,
+    turn_range_start INTEGER,
+    turn_range_end INTEGER,
+    original_token_count INTEGER,
+    topics TEXT,
+    decisions_made TEXT,
+    entities_mentioned TEXT,
+    unresolved_questions TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(conversation_id, checkpoint_number)
+);
+
+CREATE INDEX idx_ctx_ckpt_conv ON context_checkpoints(conversation_id);
+```
+
+### context_metrics
+
+Per-request context utilization tracking.
+
+```sql
+CREATE TABLE context_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    interaction_id INTEGER REFERENCES interaction_log(id),
+    context_budget INTEGER,
+    system_tokens INTEGER,
+    memory_tokens INTEGER,
+    checkpoint_tokens INTEGER,
+    active_message_tokens INTEGER,
+    generation_reserve INTEGER,
+    thinking_tokens_used INTEGER,
+    compaction_triggered BOOLEAN DEFAULT FALSE,
+    checkpoint_created BOOLEAN DEFAULT FALSE,
+    gpu_vram_used_mb INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+---
+
 ## Entity-Relationship Diagram
 
 ```
@@ -661,4 +771,6 @@ memory_metrics (standalone)
 | Knowledge | 3 | knowledge_docs, knowledge_shared_with, knowledge_fts |
 | Memory | 2 | memory_fts, memory_metrics |
 | Learning | 3 | mistake_log, mistake_tags, evolution_log |
-| **Total** | **~29 tables** | (including FTS5 virtual tables and junction tables) |
+| Backup | 1 | backup_log |
+| Context & Hardware | 4 | hardware_profile, model_config, context_checkpoints, context_metrics |
+| **Total** | **~34 tables** | (including FTS5 virtual tables and junction tables) |

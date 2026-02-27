@@ -1,0 +1,724 @@
+# Atlas Cortex — Context Window Management & Hardware Abstraction
+
+## Overview
+
+LLM context windows are finite and expensive — every token in the window consumes GPU memory and slows inference. Atlas Cortex actively manages context by compacting conversation history, checkpointing state, and dynamically sizing windows based on detected hardware. The system is **hardware-agnostic**: on first run it auto-detects GPU, VRAM, RAM, and CPU, then configures all limits accordingly.
+
+---
+
+## Hardware Auto-Detection
+
+### First-Run Discovery
+
+On installation or first startup, Cortex runs a hardware probe and stores the results:
+
+```python
+def discover_hardware():
+    """Detect available compute resources. Runs once at install, re-runs on demand."""
+    hw = {}
+    
+    # GPU Detection (vendor-agnostic)
+    hw['gpus'] = detect_gpus()        # returns list of {vendor, name, vram_mb, driver, compute_api}
+    hw['cpu'] = detect_cpu()          # {model, cores, threads, freq_mhz, arch}
+    hw['ram_mb'] = detect_ram()       # total system RAM in MB
+    hw['disk'] = detect_disk()        # {data_path_free_gb, is_nvme}
+    hw['os'] = detect_os()            # {name, version, container_runtime}
+    
+    # Derived limits
+    hw['limits'] = compute_limits(hw)
+    
+    return hw
+```
+
+### GPU Detection Matrix
+
+| Vendor | Detection Method | Compute API | Container Flag |
+|--------|-----------------|-------------|----------------|
+| AMD (discrete) | `rocm-smi`, `/sys/class/drm/card*/device/mem_info_vram_total` | ROCm / HIP | `--device /dev/kfd --device /dev/dri` |
+| NVIDIA | `nvidia-smi --query-gpu=...` | CUDA | `--gpus all` |
+| Intel Arc | `xpu-smi`, sycl-ls | oneAPI / Level Zero | `--device /dev/dri` |
+| Apple Silicon | `system_profiler SPDisplaysDataType` | Metal (via MLX/llama.cpp) | N/A (native) |
+| CPU-only | No GPU detected | llama.cpp CPU / GGML | — |
+| iGPU (any) | Detected but flagged as `is_igpu=True` | Varies | Used only if no discrete GPU |
+
+### Automatic Limit Computation
+
+```python
+def compute_limits(hw):
+    """Set safe defaults based on detected hardware."""
+    
+    limits = {}
+    
+    # Find best GPU (largest VRAM, prefer discrete over iGPU)
+    gpus = sorted(hw['gpus'], key=lambda g: (not g['is_igpu'], g['vram_mb']), reverse=True)
+    best_gpu = gpus[0] if gpus else None
+    
+    if best_gpu:
+        vram = best_gpu['vram_mb']
+        
+        # Reserve 10% VRAM for OS/display, 5% for embeddings
+        usable_vram = int(vram * 0.85)
+        
+        # Model size budget (leave room for KV cache)
+        limits['max_model_size_mb'] = int(usable_vram * 0.70)   # 70% for model weights
+        limits['kv_cache_budget_mb'] = int(usable_vram * 0.30)   # 30% for KV cache
+        
+        # Context window from KV cache budget
+        # KV cache ≈ 2 * n_layers * n_heads * head_dim * n_tokens * 2 bytes (fp16)
+        # Rough heuristic: ~0.5MB per 1K tokens for 30B-class models
+        limits['max_context_tokens'] = int(limits['kv_cache_budget_mb'] / 0.5 * 1024)
+        limits['max_context_tokens'] = min(limits['max_context_tokens'], 131072)  # hard cap
+        
+        # Safe defaults per VRAM tier
+        if vram >= 24000:       # 24GB+ (RTX 4090, 7900 XTX)
+            limits['default_context'] = 32768
+            limits['thinking_context'] = 65536
+            limits['recommended_model_class'] = '30B-70B'
+        elif vram >= 16000:     # 16-24GB (7900 XT, RTX 4080, A4000)
+            limits['default_context'] = 16384
+            limits['thinking_context'] = 32768
+            limits['recommended_model_class'] = '14B-30B'
+        elif vram >= 8000:      # 8-16GB (RTX 3070, RX 7600)
+            limits['default_context'] = 8192
+            limits['thinking_context'] = 16384
+            limits['recommended_model_class'] = '7B-14B'
+        elif vram >= 4000:      # 4-8GB (older GPUs, iGPUs)
+            limits['default_context'] = 4096
+            limits['thinking_context'] = 8192
+            limits['recommended_model_class'] = '1B-7B'
+        else:                   # <4GB or CPU-only
+            limits['default_context'] = 2048
+            limits['thinking_context'] = 4096
+            limits['recommended_model_class'] = '1B-3B'
+    else:
+        # CPU-only fallback
+        ram = hw['ram_mb']
+        limits['max_model_size_mb'] = int(ram * 0.40)  # 40% of RAM
+        limits['kv_cache_budget_mb'] = int(ram * 0.15)
+        limits['default_context'] = 4096
+        limits['thinking_context'] = 8192
+        limits['recommended_model_class'] = '3B-7B (Q4)'
+    
+    # Embedding model selection
+    if best_gpu and best_gpu['vram_mb'] >= 8000:
+        limits['embedding_model'] = 'nomic-embed-text'    # 768-dim, 274MB
+        limits['embedding_device'] = 'cpu'                 # keep GPU free for LLM
+    else:
+        limits['embedding_model'] = 'all-minilm'           # 384-dim, 46MB, faster
+        limits['embedding_device'] = 'cpu'
+    
+    # Concurrent model limit
+    limits['max_loaded_models'] = 1 if (best_gpu and best_gpu['vram_mb'] < 16000) else 2
+    
+    return limits
+```
+
+### Hardware Profile Storage
+
+```sql
+CREATE TABLE hardware_profile (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    gpu_vendor TEXT,             -- 'amd' | 'nvidia' | 'intel' | 'apple' | 'none'
+    gpu_name TEXT,
+    vram_mb INTEGER,
+    is_igpu BOOLEAN DEFAULT FALSE,
+    cpu_model TEXT,
+    cpu_cores INTEGER,
+    ram_mb INTEGER,
+    disk_free_gb REAL,
+    os_name TEXT,
+    limits_json TEXT,            -- computed limits (JSON blob — diagnostic, not queried)
+    is_current BOOLEAN DEFAULT TRUE
+);
+
+-- Only one profile is current at a time
+CREATE UNIQUE INDEX idx_hw_current ON hardware_profile(is_current) WHERE is_current = TRUE;
+```
+
+Re-detection can be triggered:
+- User says "Atlas, re-detect hardware" (after a GPU swap, RAM upgrade, etc.)
+- On container restart if `--redetect` flag is passed
+- Automatically if model loading fails with OOM
+
+---
+
+## Context Window Strategy
+
+### The Problem
+
+Context windows are the primary bottleneck:
+
+| Model | Max Context | KV Cache at Max | Impact |
+|-------|-------------|-----------------|--------|
+| qwen3:30b-a3b (current) | 32K tokens | ~8GB | Fills 40% of 20GB VRAM |
+| Same model at 8K tokens | 8K tokens | ~2GB | Leaves room for everything |
+
+Every token in the window:
+- Consumes KV cache memory (proportional to layers × heads × tokens)
+- Increases attention computation time (quadratic in full attention, but most models use GQA)
+- Must be reprocessed on every generation step
+
+### Dynamic Context Sizing
+
+Cortex adjusts the context window per-request based on task complexity:
+
+```python
+def select_context_size(query_analysis, hw_limits):
+    """Pick the right context window for this specific request."""
+    
+    base = hw_limits['default_context']
+    max_ctx = hw_limits['thinking_context']
+    
+    # Layer 1 (instant) — no LLM, no context needed
+    if query_analysis['layer'] == 1:
+        return 0
+    
+    # Layer 2 (device commands) — minimal context for confirmation
+    if query_analysis['layer'] == 2:
+        return 512
+    
+    # Layer 3 (LLM) — varies by task
+    if query_analysis['needs_thinking']:
+        # Deep reasoning: expand context but compact first
+        return min(max_ctx, base * 2)
+    
+    if query_analysis['is_followup']:
+        # Continuing a conversation: need recent history
+        return base
+    
+    if query_analysis['is_simple_question']:
+        # One-shot question: minimal context
+        return min(base, 4096)
+    
+    # Default
+    return base
+```
+
+---
+
+## Context Compaction
+
+### Why Compact?
+
+A 30-message conversation can easily hit 15K-20K tokens. Most of that is stale — old greetings, resolved questions, superseded information. Compaction shrinks the history while preserving essential context.
+
+### Compaction Strategy: Tiered Summarization
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Full Context Window                      │
+│                                                           │
+│  ┌──────────────────────┐                                │
+│  │ CHECKPOINT SUMMARIES  │  ← oldest, most compressed    │
+│  │ (1 paragraph each)    │     Turns 1-20 → 200 tokens   │
+│  └──────────────────────┘                                │
+│                                                           │
+│  ┌──────────────────────┐                                │
+│  │ RECENT SUMMARY        │  ← medium compression          │
+│  │ (key points)          │     Turns 21-28 → 500 tokens  │
+│  └──────────────────────┘                                │
+│                                                           │
+│  ┌──────────────────────┐                                │
+│  │ ACTIVE MESSAGES       │  ← no compression (verbatim)  │
+│  │ (last 3-5 turns)     │     Turns 29-32 → 2000 tokens │
+│  └──────────────────────┘                                │
+│                                                           │
+│  ┌──────────────────────┐                                │
+│  │ SYSTEM CONTEXT        │  ← always present              │
+│  │ (personality, memory, │     ~500-1000 tokens           │
+│  │  user profile, room)  │                                │
+│  └──────────────────────┘                                │
+│                                                           │
+│  Total: ~3200 tokens (vs 20K uncompacted)                │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Compaction Triggers
+
+| Trigger | Action |
+|---------|--------|
+| Context reaches 60% of limit | Summarize oldest third of messages |
+| Context reaches 80% of limit | Create checkpoint, keep only last 5 turns |
+| User starts new topic | Checkpoint current topic, fresh context |
+| Model switch (thinking mode) | Compact to make room for thinking tokens |
+| 10+ messages in conversation | Automatic rolling summarization |
+
+### Checkpoint System
+
+A checkpoint captures the essential state of a conversation segment so the full messages can be dropped from context.
+
+```sql
+CREATE TABLE context_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,      -- Open WebUI conversation ID
+    user_id TEXT NOT NULL,
+    checkpoint_number INTEGER NOT NULL,
+    
+    -- Compressed summary of this segment
+    summary TEXT NOT NULL,              -- LLM-generated summary of the checkpoint window
+    summary_tokens INTEGER,             -- token count of the summary
+    
+    -- What was covered
+    turn_range_start INTEGER,           -- first message turn number
+    turn_range_end INTEGER,             -- last message turn number  
+    original_token_count INTEGER,       -- how many tokens before compaction
+    topics TEXT,                        -- comma-separated topics covered
+    
+    -- Key facts extracted (for quick retrieval without re-reading)
+    decisions_made TEXT,                -- any decisions/choices made in this segment
+    entities_mentioned TEXT,            -- devices, people, files referenced
+    unresolved_questions TEXT,          -- anything left open at checkpoint time
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE(conversation_id, checkpoint_number)
+);
+
+CREATE INDEX idx_ctx_ckpt_conv ON context_checkpoints(conversation_id);
+```
+
+### Checkpoint Creation Flow
+
+```python
+async def create_checkpoint(conversation_id, messages, user_id):
+    """Compress a block of messages into a checkpoint summary."""
+    
+    # 1. Count what we're compressing
+    old_messages = messages[:-5]   # keep last 5 verbatim
+    keep_messages = messages[-5:]
+    
+    original_tokens = count_tokens(old_messages)
+    
+    # 2. Ask the LLM to summarize (use fast model, small context)
+    summary_prompt = f"""Summarize this conversation segment concisely. 
+    Preserve: decisions made, user preferences stated, questions asked, 
+    devices/files/people mentioned, any unresolved topics.
+    
+    Conversation:
+    {format_messages(old_messages)}
+    
+    Provide:
+    1. A 2-3 sentence summary
+    2. Key decisions (bullet list)
+    3. Unresolved items (bullet list)"""
+    
+    result = await ollama_generate(
+        model=fast_model,        # use the quick model for summarization
+        prompt=summary_prompt,
+        context_length=8192,     # minimal context for this task
+    )
+    
+    # 3. Store checkpoint
+    checkpoint_num = get_next_checkpoint_number(conversation_id)
+    insert_checkpoint(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        checkpoint_number=checkpoint_num,
+        summary=result['summary'],
+        summary_tokens=count_tokens(result['summary']),
+        turn_range_start=old_messages[0]['turn'],
+        turn_range_end=old_messages[-1]['turn'],
+        original_token_count=original_tokens,
+        topics=result.get('topics', ''),
+        decisions_made=result.get('decisions', ''),
+        entities_mentioned=result.get('entities', ''),
+        unresolved_questions=result.get('unresolved', ''),
+    )
+    
+    # 4. Return compacted context
+    return {
+        'checkpoints': load_checkpoints(conversation_id),  # all checkpoint summaries
+        'active_messages': keep_messages,                   # last 5 verbatim
+    }
+```
+
+### Checkpoint Referencing
+
+When the LLM needs detail from a checkpointed segment, Cortex can expand it:
+
+```python
+async def expand_checkpoint(conversation_id, checkpoint_id, query):
+    """Retrieve details from a specific checkpoint if the LLM needs them."""
+    
+    checkpoint = get_checkpoint(checkpoint_id)
+    
+    # First, check if the summary + extracted facts answer the question
+    if is_answerable_from_summary(checkpoint, query):
+        return checkpoint['summary']
+    
+    # If not, retrieve the original messages from interaction_log
+    original_messages = get_messages_by_turn_range(
+        conversation_id,
+        checkpoint['turn_range_start'],
+        checkpoint['turn_range_end']
+    )
+    
+    # Re-inject relevant portions only
+    relevant = filter_relevant_messages(original_messages, query)
+    return format_messages(relevant)
+```
+
+### Token Budget Allocation
+
+For any given request, the total context budget is divided:
+
+```
+Total context budget (e.g., 16384 tokens)
+├── System prompt (personality, rules)       ~300 tokens    (fixed)
+├── User profile + room context              ~200 tokens    (fixed)
+├── Memory context (HOT path results)        ~500 tokens    (variable, top-K)
+├── Checkpoint summaries                     ~200-800 tokens (grows with history)
+├── Recent summary                           ~300-500 tokens (if present)
+├── Active messages (last 3-5 turns)         ~1000-3000 tokens (verbatim)
+├── Grounding context (if needed)            ~500 tokens    (optional)
+├── Current user message                     ~100-500 tokens (verbatim)
+└── Generation headroom                      remainder      (for LLM output)
+```
+
+The budget manager ensures generation headroom is always ≥ 2048 tokens (for thinking models, ≥ 4096):
+
+```python
+def build_context(request, hw_limits):
+    """Assemble the final context, compacting as needed to stay in budget."""
+    
+    total_budget = select_context_size(request.analysis, hw_limits)
+    
+    # Fixed components
+    system_tokens = count_tokens(request.system_prompt)
+    profile_tokens = count_tokens(request.user_profile)
+    current_msg_tokens = count_tokens(request.message)
+    
+    # Reserve generation headroom
+    if request.analysis['needs_thinking']:
+        generation_reserve = 4096
+    else:
+        generation_reserve = 2048
+    
+    remaining = total_budget - system_tokens - profile_tokens - current_msg_tokens - generation_reserve
+    
+    # Fill remaining budget in priority order
+    context_parts = []
+    
+    # 1. Memory (most valuable, capped)
+    memory_budget = min(remaining * 0.20, 800)
+    memory_context = truncate_to_tokens(request.memory_hits, memory_budget)
+    context_parts.append(memory_context)
+    remaining -= count_tokens(memory_context)
+    
+    # 2. Active messages (verbatim recent turns)
+    active_budget = min(remaining * 0.60, 3000)
+    active_msgs = fit_messages_to_budget(request.recent_messages, active_budget)
+    context_parts.append(active_msgs)
+    remaining -= count_tokens(active_msgs)
+    
+    # 3. Checkpoint summaries (compressed history)
+    if remaining > 200:
+        checkpoints = fit_checkpoints_to_budget(request.checkpoints, remaining)
+        context_parts.append(checkpoints)
+    
+    return assemble_prompt(request.system_prompt, request.user_profile, 
+                          context_parts, request.message)
+```
+
+---
+
+## Thinking Mode Context Management
+
+When the model uses extended thinking (qwen3 `/think` mode), the thinking tokens consume context too. Cortex manages this:
+
+### Pre-Think Compaction
+
+Before routing to the thinking model:
+1. **Aggressive compaction** — checkpoint everything except last 2-3 turns
+2. **Strip non-essential context** — remove filler metadata, reduce memory to top-3
+3. **Expand context window** to `thinking_context` limit (if hardware allows)
+
+```python
+async def prepare_for_thinking(request, hw_limits):
+    """Compact context before sending to thinking model."""
+    
+    # 1. Force checkpoint if not already done
+    if len(request.messages) > 3:
+        request = await create_checkpoint(
+            request.conversation_id,
+            request.messages,
+            request.user_id
+        )
+    
+    # 2. Use expanded context limit
+    request.context_limit = hw_limits['thinking_context']
+    
+    # 3. Reduce memory injection to essentials only
+    request.memory_hits = request.memory_hits[:3]
+    
+    # 4. Build lean context
+    return build_context(request, hw_limits)
+```
+
+### Thinking Token Budget
+
+On the current hardware (20GB VRAM, qwen3:30b-a3b):
+
+| Context Mode | Input Tokens | Thinking Reserve | Output Tokens | KV Cache |
+|--------------|-------------|------------------|---------------|----------|
+| Normal (fast) | 8K | 0 | 2K | ~2.5GB |
+| Thinking | 8K | 16K | 4K | ~7GB |
+| Max thinking | 8K | 32K | 4K | ~11GB |
+
+The system monitors actual thinking token usage and adjusts over time:
+- If the model consistently uses <4K thinking tokens, reduce the reserve
+- If responses are cut off, increase the reserve for the next request
+
+---
+
+## Conversation Lifecycle
+
+```
+New conversation starts
+    │
+    ▼
+Messages 1-5: Full verbatim context
+    │
+    ▼
+Message 6+: Rolling summary of oldest messages begins
+    │
+    ▼
+Context at 60%: Summarize messages 1-N into recent summary
+    │
+    ▼
+Context at 80%: Checkpoint → summary stored in DB, only last 5 messages remain
+    │
+    ▼
+Multiple checkpoints accumulate as conversation grows
+    │
+    ▼
+Conversation ends → Final checkpoint created, full history queryable via interaction_log
+```
+
+### Cross-Conversation Context
+
+When a user starts a new conversation, Cortex doesn't start from zero:
+- **Memory** (HOT path) provides all learned preferences and facts
+- **Recent interactions** from `interaction_log` provide last few exchanges
+- **No old checkpoints** are loaded (clean slate for the conversation flow)
+- But if the user says "remember when we talked about X?", Cortex searches checkpoints + memory
+
+---
+
+## Hardware-Agnostic Model Selection
+
+Cortex uses detected hardware to select appropriate models:
+
+```python
+def recommend_models(hw_limits):
+    """Suggest models based on detected hardware."""
+    
+    max_size = hw_limits['max_model_size_mb']
+    
+    models = {
+        'fast': None,      # quick responses, Layer 3 simple queries
+        'standard': None,  # general use, most Layer 3 queries
+        'thinking': None,  # deep reasoning, complex problems
+        'embedding': hw_limits['embedding_model'],
+    }
+    
+    # Model candidates ordered by capability
+    candidates = [
+        # name,               size_mb, supports_thinking, quality_tier
+        ('qwen3:72b-a22b',    42000,   True,             'excellent'),
+        ('qwen3:30b-a3b',     18600,   True,             'great'),
+        ('qwen2.5:32b',       18000,   False,            'great'),
+        ('qwen3:14b',         9000,    True,             'good'),
+        ('qwen2.5:14b',       9000,    False,            'good'),
+        ('qwen3:8b',          5000,    True,             'decent'),
+        ('qwen2.5:7b',        4500,    False,            'decent'),
+        ('qwen3:4b',          2500,    True,             'basic'),
+        ('qwen2.5:3b',        2000,    False,            'basic'),
+        ('qwen3:1.7b',        1100,    True,             'minimal'),
+    ]
+    
+    # Pick best model that fits
+    for name, size, thinks, tier in candidates:
+        if size <= max_size:
+            if thinks and not models['thinking']:
+                models['thinking'] = name
+            if not models['standard']:
+                models['standard'] = name
+    
+    # Fast model: pick something ≤50% of max size
+    for name, size, thinks, tier in candidates:
+        if size <= max_size * 0.50:
+            models['fast'] = name
+            break
+    
+    # Fallback: if only one model fits, use it for everything
+    if not models['fast']:
+        models['fast'] = models['standard']
+    if not models['thinking']:
+        models['thinking'] = models['standard']
+    
+    return models
+```
+
+### Model Configuration Storage
+
+```sql
+CREATE TABLE model_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL UNIQUE,          -- 'fast' | 'standard' | 'thinking' | 'embedding'
+    model_name TEXT NOT NULL,           -- Ollama model tag
+    context_default INTEGER,            -- default context window
+    context_max INTEGER,                -- max context window
+    temperature REAL DEFAULT 0.7,
+    auto_selected BOOLEAN DEFAULT TRUE, -- TRUE if hardware-detected, FALSE if user overrode
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Users can override auto-selection:
+```
+"Atlas, use qwen3:30b-a3b for everything"
+→ UPDATE model_config SET model_name = 'qwen3:30b-a3b', auto_selected = FALSE WHERE role IN ('fast', 'standard', 'thinking')
+
+"Atlas, reset to automatic model selection"
+→ Re-run recommend_models(), SET auto_selected = TRUE
+```
+
+---
+
+## GPU Memory Monitoring
+
+Cortex monitors GPU memory in real-time to prevent OOM crashes:
+
+```python
+async def check_gpu_health():
+    """Check GPU memory before loading a model or expanding context."""
+    
+    gpu = get_current_gpu()
+    used_mb = gpu['vram_used_mb']
+    total_mb = gpu['vram_total_mb']
+    free_mb = total_mb - used_mb
+    utilization = used_mb / total_mb
+    
+    if utilization > 0.95:
+        # Critical — refuse to load more, suggest compaction
+        return 'critical', "GPU memory critical. Compacting context."
+    
+    if utilization > 0.85:
+        # Warning — reduce context size, skip thinking mode
+        return 'warning', "GPU memory high. Using reduced context."
+    
+    return 'ok', None
+```
+
+When GPU memory is constrained:
+1. **Reduce context window** to minimum viable (4096)
+2. **Skip thinking mode** — use standard model even for complex queries
+3. **Force aggressive compaction** — checkpoint immediately
+4. **Log the event** — so the nightly job can recommend hardware upgrades or smaller models
+
+---
+
+## Installation Flow
+
+```
+$ python -m cortex.install
+
+Atlas Cortex — First-Time Setup
+═══════════════════════════════
+
+[1/4] Detecting hardware...
+  CPU: AMD Ryzen 7 5700G (8c/16t)
+  RAM: 128 GB DDR4
+  GPU: AMD Radeon RX 7900 XT (20 GB GDDR6, ROCm)
+  Disk: 347 GB free on /data
+
+[2/4] Computing limits...
+  VRAM tier: 16-24 GB
+  Max model size: ~12 GB (leaves room for KV cache)
+  Default context: 16,384 tokens
+  Thinking context: 32,768 tokens
+  Embedding model: nomic-embed-text (CPU)
+  Max loaded models: 2
+
+[3/4] Recommending models...
+  Fast:     qwen2.5:14b (9.0 GB, ~55 tok/s)
+  Standard: qwen3:30b-a3b (18.6 GB, ~75 tok/s)  ← MoE, only 3B active
+  Thinking: qwen3:30b-a3b (extended context)
+  Embed:    nomic-embed-text (274 MB, CPU)
+
+  Accept these? [Y/n/customize]
+
+[4/4] Pulling models...
+  ✓ qwen3:30b-a3b (already present)
+  ✓ qwen2.5:14b (already present)
+  ✓ nomic-embed-text (already present)
+
+  ✓ Setup complete. Hardware profile saved.
+  
+  Run 'python -m cortex.start' or add Atlas Cortex as an Open WebUI Pipe.
+```
+
+---
+
+## Observability
+
+### Context Metrics Table
+
+```sql
+CREATE TABLE context_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    interaction_id INTEGER REFERENCES interaction_log(id),
+    context_budget INTEGER,             -- total tokens allocated
+    system_tokens INTEGER,              -- system prompt + profile
+    memory_tokens INTEGER,              -- HOT path memory injection
+    checkpoint_tokens INTEGER,          -- compressed history
+    active_message_tokens INTEGER,      -- verbatim recent messages
+    generation_reserve INTEGER,         -- reserved for output
+    thinking_tokens_used INTEGER,       -- actual thinking tokens consumed (if thinking mode)
+    compaction_triggered BOOLEAN DEFAULT FALSE,
+    checkpoint_created BOOLEAN DEFAULT FALSE,
+    gpu_vram_used_mb INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Health Dashboard Queries
+
+```sql
+-- Average context utilization
+SELECT 
+    DATE(created_at) as day,
+    ROUND(AVG(
+        (system_tokens + memory_tokens + checkpoint_tokens + active_message_tokens) * 100.0 
+        / context_budget
+    ), 1) as avg_utilization_pct,
+    SUM(compaction_triggered) as compactions,
+    SUM(checkpoint_created) as checkpoints
+FROM context_metrics
+GROUP BY DATE(created_at)
+ORDER BY day DESC LIMIT 7;
+
+-- Thinking mode token usage patterns
+SELECT 
+    ROUND(AVG(thinking_tokens_used)) as avg_think_tokens,
+    MAX(thinking_tokens_used) as max_think_tokens,
+    COUNT(*) as thinking_requests
+FROM context_metrics
+WHERE thinking_tokens_used > 0
+AND created_at > datetime('now', '-7 days');
+```
+
+---
+
+## Integration Points
+
+| System | Integration |
+|--------|-------------|
+| **Architecture (Layer 3)** | Context builder assembles prompt with compaction before LLM call |
+| **Memory (HOT path)** | Memory hits injected within token budget; more results = more tokens |
+| **Grounding** | Grounding loop gets its own token budget inside generation reserve |
+| **Backup** | `context_checkpoints` table backed up with cortex.db |
+| **Nightly Evolution** | Reviews context_metrics to tune default windows and compaction thresholds |
+| **User Profiles** | Profile size affects fixed token overhead; verbose profiles get trimmed |

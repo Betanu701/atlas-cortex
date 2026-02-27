@@ -73,6 +73,7 @@ atlas-cortex/
 │   ├── architecture.md        # Detailed system architecture
 │   ├── data-model.md          # Database schema (v2, normalized)
 │   ├── backup-restore.md      # Automated backups, one-command restore
+│   ├── context-management.md  # Context windows, compaction, hardware auto-detect
 │   ├── memory-system.md       # HOT/COLD memory with vector search
 │   ├── user-profiles.md       # Age-awareness, onboarding, profile evolution
 │   ├── personality.md         # Honesty system, pushback, tutoring mode

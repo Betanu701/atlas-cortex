@@ -10,6 +10,10 @@
 | C4 | Emotional Evolution | 🔲 Planned | Phase C2 + C3 + C5 complete |
 | C5 | Memory System (HOT/COLD) | 🔲 Planned | Phase C1 complete |
 | C6 | User Profiles & Age-Awareness | 🔲 Planned | Phase C3 + C5 complete |
+| C7 | Avatar System | 🔲 Planned | Phase C1 + C3 complete |
+| C8 | Knowledge Access & Privacy | 🔲 Planned | Phase C5 + C6 complete |
+| C9 | Backup & Restore | 🔲 Planned | None |
+| C10 | Context Management & Hardware | 🔲 Planned | None |
 
 ## Phase C1: Core Pipe
 
@@ -393,6 +397,7 @@ C5.1 (Embedding Model) ──▶ C5.2 (ChromaDB) ──────────�
 | C3.1 | Build speaker ID sidecar container |
 | C5.1 | Pull embedding model into Ollama, verify API |
 | C9.1 | Build backup/restore CLI tool |
+| C10.1 | Hardware auto-detection and limit computation |
 
 ## Blockers
 
@@ -438,3 +443,38 @@ See [backup-restore.md](backup-restore.md) for full design.
 - "Atlas, restore from yesterday" → restore with safety backup first
 - "Atlas, when was your last backup?" → query backup_log
 - Proactive warnings if backup health degrades
+
+---
+
+## Phase C10: Context Management & Hardware Abstraction
+
+See [context-management.md](context-management.md) for full design.
+
+### C10.1 — Hardware Auto-Detection
+- GPU detection: AMD (ROCm), NVIDIA (CUDA), Intel (oneAPI), Apple (Metal), CPU-only
+- Auto-compute VRAM budget, KV cache limits, max context window, model size cap
+- Store in `hardware_profile` table, re-detect on demand or after OOM
+- First-run installation wizard with recommended models
+
+### C10.2 — Dynamic Context Sizing
+- Per-request context window based on task complexity (512 for commands, 16K+ for reasoning)
+- Token budget allocation: system → memory → active messages → checkpoints → generation reserve
+- Thinking mode gets expanded context with pre-think compaction
+- GPU memory monitoring to prevent OOM (reduce context or skip thinking when constrained)
+
+### C10.3 — Context Compaction Engine
+- Tiered summarization: checkpoint summaries (oldest) → recent summary → active messages (verbatim)
+- Compaction triggers at 60% and 80% of context budget
+- LLM-generated checkpoint summaries preserving decisions, entities, unresolved items
+- Checkpoint expansion on demand if LLM needs detail from old segment
+
+### C10.4 — Hardware-Agnostic Model Selection
+- Auto-recommend fast/standard/thinking/embedding models based on VRAM tier
+- User overridable ("Atlas, use qwen3:30b for everything")
+- Model config stored in `model_config` table
+- Fallback chains: if preferred model doesn't fit, downgrade gracefully
+
+### C10.5 — Context Observability
+- `context_metrics` table tracking token budgets, utilization, compactions per request
+- `context_checkpoints` table for conversation history compression
+- Nightly evolution reviews metrics to tune default windows and thresholds
