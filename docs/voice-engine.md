@@ -63,24 +63,32 @@ class TTSProvider:
 
 ### Recommendation for Derek's Setup
 
-With a single RX 7900 XT (20GB VRAM) running the LLM (qwen3:30b-a3b at 18.6GB):
+With a dual-GPU setup — RX 7900 XT (20GB) + Intel Arc B580 (12GB):
 
-**Primary: Orpheus TTS via Ollama** — Orpheus has a GGUF quantized model (`legraphista/Orpheus`) that runs through Ollama. Since Ollama already manages model loading/unloading, Orpheus can share the GPU via Ollama's model switching. The Q4 quantized version needs ~6-8GB VRAM.
+**Primary: Orpheus TTS on dedicated GPU** — The B580 runs Orpheus TTS full-time via IPEX-LLM Ollama. No model switching, no waiting for the LLM to unload. TTS is always ready.
 
-**Strategy: Time-multiplexed GPU sharing**
+**Strategy: Dedicated GPU Assignment (multi-GPU)**
 ```
-User speaks → STT processes audio (CPU)
+User speaks → STT processes audio (GPU 1: B580, faster-whisper)
               → Atlas pipeline runs (CPU, except Layer 3 LLM)
+              → LLM generates response text (GPU 0: 7900 XT, qwen3)
+              → TTS generates speech simultaneously (GPU 1: B580, Orpheus)
+              → Audio streams to user while LLM is still loaded
+```
+
+Both GPUs stay loaded with their models at all times — zero switching latency.
+
+**Single-GPU Fallback** — If only one GPU is detected, Atlas reverts to time-multiplexed sharing:
+```
               → LLM generates response text (GPU: qwen3, 18.6GB)
               → LLM unloads (Ollama auto-unload)
               → Orpheus loads (GPU: ~6-8GB Q4)
               → TTS generates speech (GPU: Orpheus)
               → Orpheus unloads after idle timeout
 ```
+Model switch takes ~2-3 seconds on first load. Since LLM and TTS never run simultaneously in single-GPU mode, they share safely.
 
-The model switch takes ~2-3 seconds on first load, but Ollama caches recently used models. Since LLM and TTS never run simultaneously (you generate text THEN speak it), they can share the same GPU.
-
-**Fallback: Piper on CPU** — for ultra-fast responses where model switching latency is unacceptable (Layer 1 instant answers, device command confirmations). Piper generates audio in <100ms on CPU.
+**CPU Fallback: Piper** — for ultra-fast responses where model switching latency is unacceptable (Layer 1 instant answers, device command confirmations). Piper generates audio in <100ms on CPU.
 
 ---
 
@@ -452,6 +460,21 @@ class OrpheusTTSProvider(TTSProvider):
 
 ### VRAM Management
 
+**Multi-GPU (recommended):**
+```
+GPU 0 — RX 7900 XT (20GB)         GPU 1 — Arc B580 (12GB)
+┌──────────────────────────┐      ┌──────────────────────────┐
+│ LLM: qwen3:30b  18.6 GB │      │ Orpheus Q4:    ~6-8 GB   │
+│ KV cache:       ~1-4 GB  │      │ faster-whisper: ~1 GB    │
+│ Headroom:       ~1-2 GB  │      │ speaker-id:    ~0.5 GB   │
+│                          │      │ Headroom:      ~2-4 GB   │
+│ Ollama :11434            │      │ Ollama/IPEX :11435       │
+│ HIP_VISIBLE_DEVICES=0   │      │ ONEAPI_DEVICE_SELECTOR=1 │
+└──────────────────────────┘      └──────────────────────────┘
+```
+Both models stay resident — no switching, no latency penalty.
+
+**Single-GPU fallback:**
 ```
 LLM active (qwen3:30b-a3b): 18.6 GB VRAM
     │ (LLM finishes, Ollama idle timeout → unload)
@@ -462,12 +485,27 @@ Orpheus loads (Q4 GGUF): ~6-8 GB VRAM
 GPU free (or LLM reloads for next request)
 ```
 
-Configure Ollama for efficient switching:
+Configure Ollama for single-GPU mode:
 ```env
-# In Ollama config
+# Single-GPU Ollama config
 OLLAMA_NUM_PARALLEL=1           # one model at a time
 OLLAMA_MAX_LOADED_MODELS=1      # unload previous before loading next
 OLLAMA_KEEP_ALIVE=60s           # keep model loaded for 60s after last use
+```
+
+Configure for multi-GPU mode:
+```env
+# GPU 0 — LLM instance (Ollama native or ROCm Docker)
+OLLAMA_HOST=0.0.0.0:11434
+HIP_VISIBLE_DEVICES=0
+OLLAMA_NUM_PARALLEL=1
+OLLAMA_KEEP_ALIVE=0             # keep model loaded forever
+
+# GPU 1 — Voice instance (IPEX-LLM Ollama Docker or separate Ollama)
+OLLAMA_HOST=0.0.0.0:11435
+ONEAPI_DEVICE_SELECTOR=level_zero:0   # B580 sees itself as device 0 in its container
+OLLAMA_NUM_PARALLEL=1
+OLLAMA_KEEP_ALIVE=0             # Orpheus stays loaded forever
 ```
 
 ---
