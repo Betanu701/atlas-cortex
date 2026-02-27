@@ -225,6 +225,64 @@ See [user-profiles.md](user-profiles.md) for full design.
 
 ---
 
+## Phase C7: Avatar System (Future)
+
+Visual face for Atlas displayed on satellite screens. See [avatar-system.md](avatar-system.md) for full design.
+
+### C7.1 — Avatar Server Container
+- FastAPI + WebSocket server (atlas-avatar, port 8891)
+- Receives TTS audio + phoneme timing from Piper
+- Receives emotion state from Cortex pipe
+- Routes viseme + emotion frames to correct satellite display via WebSocket
+- Serves the avatar web page (HTML/CSS/JS/SVG)
+
+### C7.2 — Phoneme Extraction
+- Integrate with Piper TTS phoneme output or espeak-ng
+- Generate timed phoneme sequences from TTS text
+- Handle streaming chunks (sentence-boundary splitting)
+
+### C7.3 — Viseme Mapping & Sequencing
+- Map ~40 IPA phonemes → 13 viseme mouth shapes (Preston Blair simplified)
+- Generate timed viseme sequences synced to audio timestamps
+- Smooth transitions between visemes (interpolation, not snapping)
+
+### C7.4 — Browser-Based Avatar Renderer (Tier 2: SVG)
+- SVG/Canvas2D face with eyes, mouth, eyebrows
+- Mouth morphs between viseme shapes via CSS/JS animation
+- Idle behaviors: blinking (3-6s random), breathing bob, eye drift
+- Responsive — works on tablets, phones, wall displays
+
+### C7.5 — Emotion Integration
+- Drive eye shape, eyebrow position, mouth modifier from sentiment engine
+- Emotional transitions blend over 300-500ms (ease-in-out)
+- Time-of-day expressions (sleepy at night, bright in morning)
+- Background color/mood tinting based on emotional state
+
+### C7.6 — Audio-Viseme Synchronization
+- Audio and viseme stream start at same timestamp
+- 100ms buffer for network jitter absorption
+- Satellite client uses shared clock for playback + animation sync
+- Incremental streaming: animate while LLM is still generating
+
+### C7.7 — ASCII Avatar (Tier 1)
+- Text-based faces for ESP32 OLED and terminal displays
+- Viseme + emotion combinations as ASCII art strings
+- MQTT or WebSocket delivery to tiny displays
+- Minimal resource usage
+
+### C7.8 — Multi-Skin System
+- Skin manifest format (JSON): colors, animation FPS, display requirements
+- Skin directory structure: face, eyes, mouths (per viseme), brows (per emotion)
+- Built-in skins: Orb (default), Bot, Buddy, Minimal, Classic (ASCII)
+- Per-satellite or per-user skin selection
+
+### C7.9 — ComfyUI Asset Generation (Optional)
+- Use ComfyUI to generate consistent avatar art for custom skins
+- img2img for viseme × emotion combination sheets
+- Store generated assets as skin packs
+
+---
+
 ## Dependency Graph
 
 ```
