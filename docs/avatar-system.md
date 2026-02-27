@@ -2,7 +2,7 @@
 
 ## Vision
 
-Atlas gets a face. A simple, expressive, animated avatar displayed on screens near the user — think **Nick Jr. Face**, **Weebo from Flubber**, **Sonny's eye from I, Robot**, or even minimalist ASCII art. The avatar lip-syncs to Atlas's speech in real-time by mapping phonemes to mouth shapes (visemes), and expresses emotion through eye/brow animations driven by the sentiment engine.
+Atlas gets a face. A simple, expressive, animated avatar displayed on screens near the user — think **Nick Jr. Face**, **Weebo from Flubber**, **VIKI from I, Robot** (the central AI's glowing eye/face in the main chamber), or even minimalist ASCII art. The avatar lip-syncs to Atlas's speech in real-time by mapping phonemes to mouth shapes (visemes), and expresses emotion through eye/brow animations driven by the sentiment engine.
 
 The goal is **warmth and personality, not realism**. Simple geometric shapes with expressive animation feel more alive than an uncanny valley 3D face.
 
