@@ -611,6 +611,62 @@ CREATE VIRTUAL TABLE knowledge_fts USING fts5(
 
 ---
 
+### discovered_services
+
+Services found during network scan (Part 2: Integration Layer).
+
+```sql
+CREATE TABLE discovered_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_type TEXT NOT NULL,         -- 'home_assistant' | 'nextcloud' | 'mqtt' | 'caldav' | 'imap' | 'nas_smb' | 'nas_nfs'
+    name TEXT,                          -- friendly name: "Home Assistant", "Family Nextcloud"
+    url TEXT NOT NULL,                  -- base URL or host:port
+    discovery_method TEXT,              -- 'mdns' | 'manual' | 'probe'
+    is_configured BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT FALSE,
+    last_health_check TIMESTAMP,
+    health_status TEXT DEFAULT 'unknown', -- 'healthy' | 'degraded' | 'unreachable' | 'unknown'
+    discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### service_config
+
+Credentials and settings for configured services.
+
+```sql
+CREATE TABLE service_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL REFERENCES discovered_services(id),
+    config_key TEXT NOT NULL,           -- 'api_token' | 'username' | 'password' | 'mount_path' | 'port'
+    config_value TEXT NOT NULL,         -- encrypted for sensitive values
+    is_sensitive BOOLEAN DEFAULT FALSE, -- TRUE for tokens, passwords
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(service_id, config_key)
+);
+```
+
+### plugin_registry
+
+Active plugins and their state.
+
+```sql
+CREATE TABLE plugin_registry (
+    id TEXT PRIMARY KEY,               -- 'ha_commands' | 'nextcloud_files' | 'caldav_calendar' | 'list_ha_todo'
+    service_id INTEGER REFERENCES discovered_services(id),
+    plugin_type TEXT NOT NULL,          -- 'action' | 'knowledge' | 'list_backend'
+    display_name TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    pattern_count INTEGER DEFAULT 0,    -- how many Layer 2 patterns registered
+    last_health_check TIMESTAMP,
+    health_status TEXT DEFAULT 'unknown',
+    activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+---
+
 ### backup_log
 
 Tracks all backup operations. See [backup-restore.md](backup-restore.md).
@@ -773,4 +829,5 @@ memory_metrics (standalone)
 | Learning | 3 | mistake_log, mistake_tags, evolution_log |
 | Backup | 1 | backup_log |
 | Context & Hardware | 4 | hardware_profile, model_config, context_checkpoints, context_metrics |
-| **Total** | **~34 tables** | (including FTS5 virtual tables and junction tables) |
+| Discovery & Plugins | 3 | discovered_services, service_config, plugin_registry |
+| **Total** | **~37 tables** | (including FTS5 virtual tables and junction tables) |
