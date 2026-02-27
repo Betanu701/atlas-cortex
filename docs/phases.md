@@ -30,8 +30,10 @@ Create the Open WebUI Pipe function (~300 lines Python):
 ### C1.3 — HA Device Bootstrap
 - Fetch all entities from HA REST API (`/api/states`)
 - Populate `ha_devices` table
+- Fetch HA areas (`/api/config/area_registry/list`) and map entities to rooms
 - Generate initial command patterns for common device types
 - Map friendly names → entity IDs with alias support
+- Identify and register presence sensors per area into `presence_sensors` table
 
 ### C1.4 — Filler Streaming Engine
 - Default filler pools per sentiment category
@@ -100,6 +102,16 @@ Speaker recognition for personalized voice interactions.
 - Return identified user with transcribed text
 - HA automation context: "Derek said turn off lights" vs "Guest said..."
 
+### C3.5 — Spatial Awareness Engine
+- Map voice satellites to HA areas (`satellite_rooms` table)
+- Query HA presence sensors in real-time during Layer 0
+- Combine satellite ID + presence + speaker identity for room resolution
+- Multi-mic proximity: compare audio energy across satellites for same utterance
+- Ambiguity resolution: satellite+presence > satellite-only > presence-only > ask user
+- Room-scoped entity filtering: "the lights" → only entities in resolved room
+- Log all spatial resolutions to `room_context_log` for tuning
+- Contextual multi-room commands: "goodnight" triggers floor/house-scoped scenes based on location
+
 ---
 
 ## Phase C4: Emotional Evolution
@@ -150,6 +162,9 @@ C3.1 (Speaker Sidecar) ──▶ C3.2 (Enrollment) ──▶ C3.3 (Pipe Integrat
                                                        │
                                                        ▼
                                                   C3.4 (HA Voice)
+                                                       │
+                                                       ▼
+                                                  C3.5 (Spatial Awareness)
                                                        │
                               C4.1 (Profile Engine) ◀──┘
                                     │

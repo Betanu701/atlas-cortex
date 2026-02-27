@@ -82,6 +82,7 @@ CREATE TABLE interactions (
     llm_tool_calls TEXT DEFAULT '[]',   -- JSON: [{"tool": "...", "args": {...}, "result": "..."}]
     filler_used TEXT,                   -- what filler phrase was streamed (null if none)
     pattern_id INTEGER,                 -- which command_pattern matched (null if none)
+    resolved_area TEXT,                 -- room/area where the interaction originated
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (pattern_id) REFERENCES command_patterns(id)
 );
@@ -187,6 +188,70 @@ Decays by 0.005/day of no interaction (absence lowers rapport slightly)
 | 0.6 - 0.8 | casual, friendly |
 | 0.8 - 1.0 | casual-playful, uses humor |
 
+### satellite_rooms
+
+Maps voice satellites to physical rooms/areas in Home Assistant.
+
+```sql
+CREATE TABLE satellite_rooms (
+    satellite_id TEXT PRIMARY KEY,      -- Wyoming device_id: "satellite_kitchen"
+    area_id TEXT NOT NULL,              -- HA area: "kitchen", "office", "bedroom"
+    area_name TEXT NOT NULL,            -- Display name: "Kitchen", "Derek's Office"
+    floor TEXT,                         -- "upstairs", "downstairs", "basement"
+    mic_position TEXT,                  -- JSON: {"x": 3.2, "y": 1.5, "z": 1.0} (meters, for triangulation)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### presence_sensors
+
+Maps HA presence/motion sensors to rooms for spatial awareness.
+
+```sql
+CREATE TABLE presence_sensors (
+    entity_id TEXT PRIMARY KEY,         -- "binary_sensor.office_motion"
+    area_id TEXT NOT NULL,              -- "office"
+    sensor_type TEXT NOT NULL,          -- "motion" | "mmwave" | "ble" | "door_contact" | "camera"
+    priority INTEGER DEFAULT 1,         -- higher = more trusted (mmwave:3 > motion:2 > door:1)
+    indicates_presence_when TEXT         -- "on", "open", "home" — what state means someone is present
+        DEFAULT 'on',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_presence_area ON presence_sensors(area_id);
+```
+
+**Sensor priority guide:**
+| Type | Priority | Notes |
+|------|----------|-------|
+| mmWave radar | 3 | Detects presence even when still (sleeping, reading) |
+| BLE tracker | 3 | Per-person tracking via phone/watch beacon |
+| PIR motion | 2 | Only triggers on movement, misses stationary people |
+| Camera person detection | 2 | Accurate but privacy-sensitive |
+| Door contact | 1 | Infers entry/exit, not continuous presence |
+
+### room_context_log
+
+Audit trail of spatial resolutions for debugging and tuning.
+
+```sql
+CREATE TABLE room_context_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    interaction_id INTEGER,             -- links to interactions table
+    resolved_area TEXT,                 -- final room determination
+    confidence REAL,                    -- 0.0 - 1.0
+    satellite_id TEXT,                  -- which mic heard it (null for typed)
+    satellite_area TEXT,                -- room the satellite is in
+    presence_signals TEXT,              -- JSON: [{"entity": "...", "area": "office", "state": "on"}]
+    speaker_id TEXT,                    -- identified speaker
+    resolution_method TEXT,             -- "satellite+presence", "satellite_only", "presence_only", "asked_user"
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (interaction_id) REFERENCES interactions(id)
+);
+
+CREATE INDEX idx_room_context_interaction ON room_context_log(interaction_id);
+```
+
 ### learned_patterns
 
 Tracks which fallthrough interactions have been processed into patterns.
@@ -228,8 +293,8 @@ speaker_profiles ──── user_id ────▶ emotional_profiles
                                           │
                                           │ user_id
                                           ▼
-                                    interactions
-                                          │
+satellite_rooms ──── area_id ────▶ interactions ◀──── presence_sensors
+                                          │                (area_id)
                               pattern_id  │  entities_used
                                   │       │       │
                                   ▼       │       ▼
@@ -237,6 +302,8 @@ speaker_profiles ──── user_id ────▶ emotional_profiles
                                   ▲       │
                                   │       │
                           learned_patterns◀┘
+
+room_context_log ── interaction_id ──▶ interactions
 
 evolution_log (standalone audit trail)
 ```
