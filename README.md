@@ -16,6 +16,7 @@ A self-evolving AI assistant system built on top of [Open WebUI](https://github.
 - **Conversational onboarding** — learns about users naturally through conversation, never overwrites, always builds upon
 - **Animated avatar** — lip-synced face on satellite displays using phoneme-to-viseme mapping, emotion-driven expressions
 - **Honest personality** — pushes back on bad ideas, challenges users in tutoring mode, never sycophantic
+- **Anti-hallucination** — internal confidence scoring, grounding loops, mistake tracking and learning
 
 ## Architecture
 
@@ -72,6 +73,7 @@ atlas-cortex/
 │   ├── memory-system.md       # HOT/COLD memory with vector search
 │   ├── user-profiles.md       # Age-awareness, onboarding, profile evolution
 │   ├── personality.md         # Honesty system, pushback, tutoring mode
+│   ├── grounding.md           # Anti-hallucination, confidence scoring, mistake learning
 │   ├── avatar-system.md       # Lip-sync avatars, visemes, multi-skin
 │   ├── phases.md              # Implementation phases and dependencies
 │   └── infrastructure.md      # Current server/container topology
