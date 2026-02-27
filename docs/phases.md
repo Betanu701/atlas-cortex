@@ -77,10 +77,14 @@ See [installation.md](installation.md) for full design.
 - Options: Ollama, OpenAI-compatible, sentence-transformers (in-process), fastembed
 - Fallback: if LLM provider has no embedding support, use in-process sentence-transformers
 
-### C0.3 — Hardware Detection & Model Selection
+### C0.3 — Hardware Detection & GPU Assignment
 - GPU detection (AMD/NVIDIA/Intel/Apple/CPU-only)
+- Multi-GPU discovery: enumerate all discrete GPUs, rank by VRAM
+- GPU role assignment: largest → LLM, second → voice (TTS/STT), third+ → overflow
+- Mixed-vendor support: generate per-GPU isolation env vars (HIP/CUDA/oneAPI)
 - VRAM/RAM budgets, context window limits
 - Model recommendations based on hardware tier
+- Store per-GPU profiles in `hardware_gpu` table
 - Already designed in C10.1 — shared implementation
 
 ### C0.4 — LLM Backend Discovery
