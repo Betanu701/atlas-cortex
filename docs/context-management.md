@@ -474,6 +474,10 @@ The system monitors actual thinking token usage and adjusts over time:
 
 ## Conversation Lifecycle
 
+### Guiding Principle: The User Never Sees the Seams
+
+Context management is entirely invisible to the user. They should never see an error, a truncation warning, or a "context limit reached" message. If the window fills up, Cortex handles it silently — compacting, checkpointing, chunking, and reassembling — while the user sees only a natural, continuous conversation. Filler phrases bridge any latency gaps.
+
 ```
 New conversation starts
     │
@@ -495,6 +499,342 @@ Multiple checkpoints accumulate as conversation grows
     ▼
 Conversation ends → Final checkpoint created, full history queryable via interaction_log
 ```
+
+### Transparent Overflow Recovery
+
+When context hits the limit mid-generation (the LLM is producing output and runs out of room), or when a complex task requires more output than the generation reserve allows, Cortex handles it transparently:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Overflow Recovery Flow                         │
+│                                                                   │
+│  User sends complex request                                      │
+│       │                                                           │
+│       ▼                                                           │
+│  Build context → send to LLM → LLM starts generating             │
+│       │                                                           │
+│       ▼                                                           │
+│  Monitor: is output approaching generation reserve limit?         │
+│       │                                                           │
+│       ├── NO → stream output normally, done                       │
+│       │                                                           │
+│       └── YES → Overflow Protocol:                                │
+│            │                                                      │
+│            ▼                                                      │
+│       1. Capture partial output so far                            │
+│       2. Stream filler to user: "Let me continue..."             │
+│       3. Aggressively compact: checkpoint everything,             │
+│          keep only the partial output + original question         │
+│       4. Re-send to LLM with instruction:                        │
+│          "Continue from where you left off. Do NOT repeat         │
+│           what was already said. Here's what you've covered:      │
+│           [partial output summary]"                               │
+│       5. Stream continuation to user                              │
+│       6. If STILL overflows → repeat (up to 3 chunks)            │
+│       7. Final assembly: deduplicate, ensure coherence            │
+│                                                                   │
+│  User sees: one seamless response                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Chunked Generation for Long Outputs
+
+Some tasks naturally produce long output (code generation, detailed explanations, multi-step plans). Rather than hoping it fits, Cortex proactively chunks:
+
+```python
+async def generate_with_overflow(request, hw_limits):
+    """Generate a response, handling overflow transparently."""
+    
+    chunks = []
+    filler_sent = False
+    total_output_tokens = 0
+    max_output_tokens = hw_limits.get('max_total_output', 100000)  # safety net, not a hard limit
+    
+    while True:
+        # Check for user interruption before each chunk
+        if await check_user_interrupt(request.conversation_id):
+            interrupt = await get_interrupt(request.conversation_id)
+            if interrupt['type'] == 'stop':
+                # User said "stop" / "that's enough" / "got it"
+                break
+            elif interrupt['type'] == 'clarify':
+                # User asked a follow-up mid-generation — pivot
+                return await handle_mid_generation_question(
+                    request, chunks, interrupt['message']
+                )
+        
+        # Diminishing returns check — if we've generated a LOT, ask if user wants more
+        if total_output_tokens > 8000 and len(chunks) >= 3:
+            yield "\n\nThat covers the main points — want me to keep going with more detail?"
+            user_response = await wait_for_user_response(request.conversation_id, timeout=30)
+            if user_response and is_negative(user_response):
+                break
+            # If no response or positive, continue
+        
+        # Build context (tighter each attempt)
+        context = build_context(request, hw_limits)
+        
+        if len(chunks) > 0:
+            covered_summary = summarize_chunks(chunks)
+            context = inject_continuation_prompt(context, covered_summary)
+        
+        # Generate
+        result = await ollama_generate_streaming(
+            model=request.model,
+            prompt=context,
+            stream=True,
+        )
+        
+        partial_output = ""
+        async for token in result:
+            # Check for real-time interruption during streaming
+            if await check_user_interrupt(request.conversation_id):
+                interrupt = await get_interrupt(request.conversation_id)
+                if interrupt['type'] == 'stop':
+                    chunks.append(partial_output)
+                    return  # stop immediately
+                elif interrupt['type'] == 'clarify':
+                    chunks.append(partial_output)
+                    return await handle_mid_generation_question(
+                        request, chunks, interrupt['message']
+                    )
+            
+            partial_output += token
+            yield token
+            
+            if is_near_generation_limit(partial_output, hw_limits):
+                break
+        
+        total_output_tokens += count_tokens(partial_output)
+        chunks.append(partial_output)
+        
+        # Did the LLM finish naturally?
+        if result.done:
+            break
+        
+        # Truncated — continue with filler
+        if not filler_sent:
+            yield select_continuation_filler(request.sentiment)
+            filler_sent = True
+        
+        request = await compact_for_continuation(request, chunks)
+        
+        # Safety net — prevent infinite loops (not a hard limit, just sanity)
+        if total_output_tokens > max_output_tokens:
+            yield "\n\nI've covered a lot — let me know if you need me to go deeper on any part."
+            break
+    
+    # Post-processing: verify no repetition across chunks
+    final_output = "".join(chunks)
+    if has_significant_repetition(final_output):
+        # Use fast model to deduplicate
+        final_output = await deduplicate_output(final_output)
+
+
+async def compact_for_continuation(request, chunks_so_far):
+    """Aggressively compact context to make room for the next chunk."""
+    
+    # Checkpoint ALL conversation history
+    await create_checkpoint(
+        request.conversation_id,
+        request.messages,
+        request.user_id,
+    )
+    
+    # New context: only the original question + what we've covered
+    request.messages = [
+        request.messages[0],   # original user message
+    ]
+    
+    # Summarize what's been generated (not the full text — just key points)
+    request.continuation_context = summarize_chunks(chunks_so_far)
+    
+    return request
+```
+
+### Continuation Filler Phrases
+
+When overflow recovery adds latency, the user hears/sees natural bridging:
+
+| Scenario | Example Fillers |
+|----------|----------------|
+| First overflow (short pause) | "Bear with me, there's quite a bit to cover..." |
+| Complex task continuing | "...and continuing with the rest..." |
+| Multi-part answer | "Let me also address..." |
+| Code generation overflow | "...and here's the rest of that..." |
+| Research/lookup overflow | "Found some more details on that..." |
+
+These are NOT the confidence/sentiment fillers from the filler engine — they're specifically for seamless continuation. They're short, natural, and don't draw attention to the underlying mechanics.
+
+### Output Deduplication
+
+When responses span multiple LLM calls, overlap can occur. The assembler handles this:
+
+```python
+async def deduplicate_output(full_text):
+    """Remove repeated content from multi-chunk output."""
+    
+    # 1. Sentence-level overlap detection
+    sentences = split_sentences(full_text)
+    seen = set()
+    deduped = []
+    
+    for sentence in sentences:
+        # Normalize for comparison (lowercase, strip whitespace)
+        normalized = normalize(sentence)
+        
+        # Fuzzy match — catch near-duplicates (not just exact)
+        if not any(similarity(normalized, s) > 0.85 for s in seen):
+            deduped.append(sentence)
+            seen.add(normalized)
+    
+    result = " ".join(deduped)
+    
+    # 2. If significant content was removed, do a coherence pass
+    if len(result) < len(full_text) * 0.80:
+        # Use fast model to smooth transitions
+        result = await smooth_transitions(result)
+    
+    return result
+```
+
+### What the User Experiences
+
+From the user's perspective, context overflow is invisible:
+
+| Internal Event | User Sees |
+|---------------|-----------|
+| Context at 60%, compaction triggered | Nothing — response continues normally |
+| Context at 80%, checkpoint created | Nothing — conversation continues |
+| Output truncated, continuation needed | "...and continuing with that..." then response flows |
+| Multiple chunks assembled | One coherent response, no visible seams |
+| Emergency compaction (near OOM) | Slight pause, maybe a filler, then response |
+| Conversation at 100+ messages | Same quality — checkpoints keep it manageable |
+
+**The user never sees:**
+- "Context limit reached"
+- Truncated responses
+- "I can't process that much text"
+- Repeated paragraphs
+- Loss of conversation context
+- Any acknowledgment that limits exist
+
+---
+
+## User Interruption Handling
+
+The user can interrupt Atlas at any point during generation — to stop, redirect, or ask a clarifying question. This mirrors natural conversation: you don't wait for someone to finish a monologue before speaking.
+
+### Interruption Types
+
+| Signal | Detection | Action |
+|--------|-----------|--------|
+| **Stop** | "stop", "that's enough", "got it", "thanks", "ok ok" | Immediately stop generation, keep what was streamed |
+| **Redirect** | "wait, actually...", "forget that, I need...", new question | Stop current generation, pivot to new request with prior context |
+| **Clarify** | "what do you mean by...", "can you explain the X part?" | Pause generation, answer the clarification, optionally resume |
+| **Refine** | "make it shorter", "more detail on X", "skip the intro" | Stop, re-generate with the refinement instruction |
+
+### How Interruption Works
+
+```
+User sends message while Atlas is still generating
+    │
+    ▼
+Cortex receives new message → classify as interrupt
+    │
+    ├── STOP → halt generation immediately
+    │          save partial output to interaction_log
+    │          acknowledge naturally: "Sure, stopping there."
+    │
+    ├── REDIRECT → halt generation
+    │              checkpoint partial output
+    │              begin processing new request
+    │              prior partial output available as context
+    │
+    ├── CLARIFY → pause generation (hold state)
+    │             answer clarification inline
+    │             ask: "Want me to continue where I left off?"
+    │             if yes → resume generation from pause point
+    │             if no → done
+    │
+    └── REFINE → halt generation
+                 re-generate with original request + refinement
+                 compact prior attempt into "don't do this" context
+```
+
+### Implementation
+
+```python
+class InterruptHandler:
+    """Monitors for user messages during active generation."""
+    
+    def __init__(self):
+        self.active_generations = {}  # conversation_id → generation state
+    
+    async def check_user_interrupt(self, conversation_id):
+        """Non-blocking check for incoming user message during generation."""
+        return conversation_id in self._pending_interrupts
+    
+    async def classify_interrupt(self, message):
+        """Classify what kind of interrupt this is — fast, no LLM needed."""
+        
+        text = message.lower().strip()
+        
+        # Stop signals (pattern match, no LLM)
+        stop_patterns = [
+            r'^(stop|enough|got it|that\'?s enough|ok+|thanks?|thank you|nvm|never\s*mind)[\.\!]*$',
+            r'^(i\'?m good|all good|that works|perfect)[\.\!]*$',
+        ]
+        if any(re.match(p, text) for p in stop_patterns):
+            return 'stop'
+        
+        # Refine signals
+        refine_patterns = [
+            r'^(make it|be more|less|shorter|longer|simpler|more detail)',
+            r'^(skip|focus on|just the|only the)',
+        ]
+        if any(re.match(p, text) for p in refine_patterns):
+            return 'refine'
+        
+        # Clarify signals (questions about what was just said)
+        if text.startswith(('what do you mean', 'what\'s', 'can you explain', 'huh')):
+            return 'clarify'
+        
+        # Default: treat as redirect (new request)
+        return 'redirect'
+
+
+async def handle_mid_generation_question(request, chunks_so_far, new_message):
+    """User asked a clarifying question while we were generating."""
+    
+    # Summarize what we've generated so far
+    partial_context = summarize_chunks(chunks_so_far)
+    
+    # Build new request with the clarification
+    clarification_request = build_clarification_context(
+        original_question=request.messages[0],
+        partial_answer=partial_context,
+        clarification=new_message,
+    )
+    
+    # Answer the clarification (may be instant if simple)
+    answer = await process_through_pipeline(clarification_request)
+    yield answer
+    
+    # Offer to continue
+    yield "\n\nWant me to continue where I left off?"
+```
+
+### Voice Interruption
+
+For voice interactions, interruption is even more natural — the user just starts talking:
+
+- **Wake word during generation** → pause output, listen
+- **Short utterance** ("stop", "ok") → classify as stop
+- **New sentence** → classify as redirect/clarify
+- **Silence after pause** (>3 seconds) → resume generation
+
+The satellite mic should be in **listen-during-playback** mode so it can detect when the user speaks over Atlas. This requires echo cancellation (the mic hears Atlas's own TTS output and must filter it out to detect the user's voice).
 
 ### Cross-Conversation Context
 
