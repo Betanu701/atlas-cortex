@@ -1,122 +1,130 @@
 # Atlas Cortex — Implementation Phases
 
+## Part 1 vs Part 2
+
+Atlas Cortex is split into two independent parts so that the core engine is **portable and reusable** by anyone, while the integration layer adapts to whatever infrastructure is available.
+
+| | Part 1: Core Engine | Part 2: Integration Layer |
+|---|---|---|
+| **What** | The brain — personality, memory, context, avatar, grounding | The body — connects to the real world (smart home, files, network) |
+| **Requires** | Ollama + Open WebUI + Python | Discovered at install time (HA, Nextcloud, NAS, etc.) |
+| **Portable?** | Yes — works on any machine with a GPU (or CPU) | Adapts to whatever services are found |
+| **Key design** | No hardcoded infrastructure references | Plugin/discovery architecture |
+
+### How It Works for Others
+
+When someone installs Atlas Cortex on their own system:
+
+1. **Part 1 installs first** — hardware detection, model selection, core pipe, memory, profiles (all generic)
+2. **Part 2 runs service discovery** — scans the network for Home Assistant, Nextcloud, CalDAV, IMAP, NAS shares, etc.
+3. **User confirms** what was found and provides credentials (API tokens, passwords)
+4. **Integration plugins activate** based on discovered services
+5. **System works immediately** with whatever was found — no HA? No problem, just no smart home commands
+
+---
+
 ## Phase Overview
+
+### Part 1: Core Engine (no infrastructure knowledge needed)
 
 | Phase | Name | Status | Prerequisites |
 |-------|------|--------|---------------|
-| C1 | Core Pipe | 🔲 Planned | HA long-lived access token |
-| C2 | Self-Learning Engine | 🔲 Planned | Phase C1 complete |
-| C3 | Voice Identity + Spatial | 🔲 Planned | Phase C1 complete |
-| C4 | Emotional Evolution | 🔲 Planned | Phase C2 + C3 + C5 complete |
-| C5 | Memory System (HOT/COLD) | 🔲 Planned | Phase C1 complete |
-| C6 | User Profiles & Age-Awareness | 🔲 Planned | Phase C3 + C5 complete |
-| C7 | Avatar System | 🔲 Planned | Phase C1 + C3 complete |
-| C8 | Knowledge Access & Privacy | 🔲 Planned | Phase C5 + C6 complete |
+| C1 | Core Pipe & Logging | 🔲 Planned | None (Ollama + Open WebUI only) |
+| C3a | Voice Identity (generic) | 🔲 Planned | None |
+| C4 | Emotional Evolution | 🔲 Planned | C3a + C5 + C6 |
+| C5 | Memory System (HOT/COLD) | 🔲 Planned | None |
+| C6 | User Profiles & Age-Awareness | 🔲 Planned | C3a + C5 |
+| C7 | Avatar System | 🔲 Planned | None |
 | C9 | Backup & Restore | 🔲 Planned | None |
 | C10 | Context Management & Hardware | 🔲 Planned | None |
 
-## Phase C1: Core Pipe
+### Part 2: Integration Layer (discovered at install)
 
-The foundational pipe function that replaces the existing Atlas Turbo / Atlas / Atlas Deep Thought models with a single intelligent router.
+| Phase | Name | Status | Prerequisites |
+|-------|------|--------|---------------|
+| I1 | Service Discovery & Setup | 🔲 Planned | Part 1 C1 operational |
+| I2 | Home Assistant Integration | 🔲 Planned | I1 + HA discovered |
+| I3 | Voice Pipeline & Spatial | 🔲 Planned | I1 + I2 + C3a |
+| I4 | Self-Learning Engine | 🔲 Planned | I2 + C1 logging |
+| I5 | Knowledge Source Connectors | 🔲 Planned | I1 + C5 memory + C6 profiles |
+| I6 | List Management | 🔲 Planned | I1 + I5 |
+| I7 | Offsite Backup | 🔲 Planned | I1 + C9 |
+
+---
+
+# Part 1: Core Engine
+
+Everything below works with just Ollama + Open WebUI. No Home Assistant, no specific servers, no network knowledge.
+
+## Phase C1: Core Pipe & Logging
+
+The foundational pipe function — an intelligent router that processes every message through layered analysis.
 
 ### C1.1 — Core Cortex Pipe Function
-Create the Open WebUI Pipe function (~300 lines Python):
+Create the Open WebUI Pipe function:
 - VADER sentiment analysis (installed in pipe's `__init__`)
+- Layer 0: context assembly (user identification, sentiment, time-of-day)
 - Layer 1: instant answers (date, time, math, identity, greetings)
-- Layer 2: seed command patterns for HA (hardcoded initial set)
+- Layer 2: **plugin-based action layer** — dispatches to registered integration plugins (initially empty; Part 2 adds HA, lists, etc.)
 - Layer 3: filler streaming + Ollama API background call
-- Auto-select model based on query complexity (Turbo vs Atlas vs Deep)
+- Auto-select model based on query complexity
+- **No hardcoded infrastructure** — Layer 2 is a registry that plugins populate
 
 ### C1.2 — Interaction Logging System
 - Create cortex.db SQLite database (mounted volume)
 - Create all tables from [data-model.md](data-model.md)
 - Log every interaction with full metadata
-- Flag LLM fallthrough events that used HA tools
+- Flag LLM fallthrough events that triggered plugins (for learning)
 
-### C1.3 — HA Device Bootstrap
-- Fetch all entities from HA REST API (`/api/states`)
-- Populate `ha_devices` table
-- Fetch HA areas (`/api/config/area_registry/list`) and map entities to rooms
-- Generate initial command patterns for common device types
-- Map friendly names → entity IDs with alias support
-- Identify and register presence sensors per area into `presence_sensors` table
-
-### C1.4 — Filler Streaming Engine
+### C1.3 — Filler Streaming Engine
 - Default filler pools per sentiment category
 - Time-of-day aware fillers (morning, afternoon, late night)
+- Confidence-aware fillers (see [grounding.md](grounding.md))
 - Background thread for Ollama streaming
 - Smooth transition: inject filler context into LLM system prompt
 
-### C1.5 — Register Atlas Cortex Model
+### C1.4 — Register Atlas Cortex Model
 - Register Cortex as a model in Open WebUI
 - Set as default model
-- Retire Atlas Turbo / Atlas / Atlas Deep Thought (Cortex replaces all three)
+- If prior models exist (Turbo/Atlas/Deep), retire them (Cortex replaces all)
+
+### C1.5 — Plugin Registry System
+- Layer 2 action registry: plugins register command patterns + handlers
+- Plugin lifecycle: discover → configure → activate → health check
+- Plugin API: `register_patterns()`, `handle_command()`, `discover_entities()`
+- Built-in plugins: none (Part 2 provides HA, lists, etc.)
+- Plugin health monitoring: disable unhealthy plugins gracefully
 
 ---
 
-## Phase C2: Self-Learning Engine
+## Phase C3a: Voice Identity (Generic)
 
-The system that makes Cortex smarter every day.
+Speaker recognition — no infrastructure dependencies. Works with any audio source.
 
-### C2.1 — Nightly Evolution Cron Job
-- Lightweight Python container with cron
-- Schedule: run at 3 AM daily
-- HA device discovery diff (new devices, removed devices, renamed)
-- LLM-powered pattern generation for new devices
-- Write results to `evolution_log`
-
-### C2.2 — Fallthrough Analyzer
-- Query interactions where `matched_layer = 'llm'` AND `llm_tool_calls` contain HA actions
-- Use LLM to generate regex patterns from the natural language that triggered fallthrough
-- Insert learned patterns into `command_patterns` with source `'learned'`
-- Confidence scoring and deduplication
-
-### C2.3 — Pattern Lifecycle Management
-- Track `hit_count` per pattern
-- Prune zero-hit patterns after 30 days
-- Boost frequently-hit patterns
-- Merge similar patterns into generalized forms
-- Weekly report: "X% of HA commands now handled without LLM"
-
----
-
-## Phase C3: Voice Identity
-
-Speaker recognition for personalized voice interactions.
-
-### C3.1 — Speaker ID Sidecar Container
+### C3a.1 — Speaker ID Sidecar Container
 - Docker container with resemblyzer library (CPU-based, ~200MB RAM)
 - REST API:
   - `POST /enroll` — audio + user_id → store embedding
   - `POST /identify` — audio → user_id + confidence
 - Cosine similarity matching against stored embeddings
 
-### C3.2 — Voice Enrollment Flow
+### C3a.2 — Voice Enrollment Flow
 - Voice command trigger: "Hey Atlas, remember my voice"
 - Multi-sample enrollment (3-5 utterances for accuracy)
 - Link voice profile to Open WebUI user account
 - Average embeddings across samples for robustness
 
-### C3.3 — Cortex Pipe Integration
+### C3a.3 — Cortex Pipe Integration
 - Voice requests include speaker embedding in metadata
 - Pipe calls speaker-id sidecar for identification
 - Inject identified user context into all processing layers
 - Unknown speaker handling: prompt for name, offer enrollment
 
-### C3.4 — HA Voice Pipeline Integration
-- Modify Wyoming STT pipeline to pass audio to speaker-id sidecar
-- Return identified user with transcribed text
-- HA automation context: "Derek said turn off lights" vs "Guest said..."
-
-### C3.5 — Spatial Awareness Engine
-- Map voice satellites to HA areas (`satellite_rooms` table)
-- Query HA presence sensors in real-time during Layer 0
-- Combine satellite ID + presence + speaker identity for room resolution
-- Multi-mic proximity: compare audio energy across satellites for same utterance
-- Ambiguity resolution: satellite+presence > satellite-only > presence-only > ask user
-- Room-scoped entity filtering: "the lights" → only entities in resolved room
-- Log all spatial resolutions to `room_context_log` for tuning
-- Contextual multi-room commands: "goodnight" triggers floor/house-scoped scenes based on location
+### C3a.4 — Voice-Based Age Estimation
+- Extract pitch, cadence, speech rate from speaker-id audio
+- Vocabulary complexity analysis from transcript
+- Low-confidence heuristic (used as initial hint only, refined through interaction)
+- Never tell a user their estimated age — only use internally for tone
 
 ---
 
@@ -186,7 +194,7 @@ Adapted from [agentic-memory-quest](https://github.com/Betanu701/agentic-memory-
 ### C5.5 — Memory Integration with Pipe Layers
 - Layer 0: HOT query to retrieve user memories on every request
 - Layer 1: Memory-powered instant answers ("what's my daughter's name?")
-- Layer 2: Memory-powered personalized defaults ("set lights" → remembered preference)
+- Layer 2: Memory-powered personalized defaults (via plugins)
 - Layer 3: Inject memory context into LLM system prompt
 - COLD path fires after every interaction to capture new memories
 
@@ -217,27 +225,21 @@ See [user-profiles.md](user-profiles.md) for full design.
 
 ### C6.4 — Parental Controls
 - `parental_controls` table: content filter level, allowed devices, allowed hours
-- Children can only control devices on their allowed list
-- Time-based restrictions (e.g., no smart home control after 9 PM for kids)
+- Children can only trigger actions on their allowed list
+- Time-based restrictions (e.g., no actions after 9 PM for kids)
 - Sensitive commands require parent confirmation
-
-### C6.5 — Voice-Based Age Estimation
-- Extract pitch, cadence, speech rate from speaker-id audio
-- Vocabulary complexity analysis from transcript
-- Low-confidence heuristic (used as initial hint only, refined through interaction)
-- Never tell a user their estimated age — only use internally for tone
 
 ---
 
 ## Phase C7: Avatar System (Future)
 
-Visual face for Atlas displayed on satellite screens. See [avatar-system.md](avatar-system.md) for full design.
+Visual face for Atlas displayed on screens. See [avatar-system.md](avatar-system.md) for full design.
 
 ### C7.1 — Avatar Server Container
 - FastAPI + WebSocket server (atlas-avatar, port 8891)
-- Receives TTS audio + phoneme timing from Piper
+- Receives TTS audio + phoneme timing from any TTS engine
 - Receives emotion state from Cortex pipe
-- Routes viseme + emotion frames to correct satellite display via WebSocket
+- Routes viseme + emotion frames to displays via WebSocket
 - Serves the avatar web page (HTML/CSS/JS/SVG)
 
 ### C7.2 — Phoneme Extraction
@@ -265,7 +267,7 @@ Visual face for Atlas displayed on satellite screens. See [avatar-system.md](ava
 ### C7.6 — Audio-Viseme Synchronization
 - Audio and viseme stream start at same timestamp
 - 100ms buffer for network jitter absorption
-- Satellite client uses shared clock for playback + animation sync
+- Client uses shared clock for playback + animation sync
 - Incremental streaming: animate while LLM is still generating
 
 ### C7.7 — ASCII Avatar (Tier 1)
@@ -278,140 +280,12 @@ Visual face for Atlas displayed on satellite screens. See [avatar-system.md](ava
 - Skin manifest format (JSON): colors, animation FPS, display requirements
 - Skin directory structure: face, eyes, mouths (per viseme), brows (per emotion)
 - Built-in skins: Orb (default), Bot, Buddy, Minimal, Classic (ASCII)
-- Per-satellite or per-user skin selection
+- Per-display or per-user skin selection
 
 ### C7.9 — ComfyUI Asset Generation (Optional)
 - Use ComfyUI to generate consistent avatar art for custom skins
 - img2img for viseme × emotion combination sheets
 - Store generated assets as skin packs
-
----
-
-## Phase C8: Knowledge Access & Data Privacy (Future)
-
-Personal file/message/calendar indexing with strict user-scoped access control. See [knowledge-access.md](knowledge-access.md) for full design.
-
-### C8.1 — Knowledge Index Infrastructure
-- ChromaDB `cortex_knowledge` collection (separate from memory)
-- SQLite `knowledge_docs` metadata table + FTS5 mirror
-- Access gate: filter all queries by owner_id + access_level
-- Identity confidence determines access tier (private/shared/household/public)
-
-### C8.2 — Source Connectors
-- Nextcloud (WebDAV): files, photos (EXIF), notes
-- Email (IMAP): subject, body, attachments
-- Calendar (CalDAV): events, shared calendars
-- NAS (SMB/NFS): documents on file shares
-- HA history: device states, automation logs
-- Chat history: prior Atlas conversations
-
-### C8.3 — Document Processing Pipeline
-- Text extraction: PDF, DOCX, XLSX, CSV, Markdown, plain text
-- Chunking for large documents
-- Owner assignment from source path / account
-- Access level assignment (private default, shared/household by path convention)
-- PII tagging (tag, don't redact — it's the user's own data)
-- Embed via Ollama, upsert to ChromaDB + FTS5
-
-### C8.4 — Privacy Enforcement
-- User-scoped queries: owner_id filter on all retrievals
-- Unknown speaker: household + public data only
-- Low-confidence speaker: shared + household + public only
-- Cross-user data requests blocked with natural explanation
-- Children's data visible to their parent (parental_controls)
-- Children cannot access parent's private data
-- Exclusion list: passwords, alarm codes, SSH keys, .env files, medical, financial
-
-### C8.5 — Sync & Freshness
-- Nightly full scan for all sources
-- Real-time: HA states (WebSocket), chat history (interaction logger)
-- Frequent: calendar (15min), email (30min)
-- On-demand reindex triggered by user request
-- Change detection via content hash (only re-embed modified docs)
-
-### C8.6 — List Management
-- List registry table with backend, permissions, aliases
-- Backend adapters: HA to-do, Nextcloud CalDAV, file-based, Grocy, Todoist
-- List resolution: explicit name → category inference → conversation context → memory → ask
-- Permission enforcement: public lists allow anyone, private/shared respect access control
-- Auto-discovery of lists from HA, Nextcloud, file paths during nightly job
-- Remember routing preferences so user never repeats a clarification
-
----
-
-## Dependency Graph
-
-```
-C1.1 (Core Pipe) ──────┬──▶ C1.4 (Filler Engine) ──▶ C1.5 (Register Model)
-                        │
-C1.3 (HA Bootstrap) ───┤
-                        │
-C1.2 (Logging) ────────┴──▶ C2.1 (Nightly Job) ──▶ C2.2 (Fallthrough)
-                                    │                       │
-                                    ▼                       ▼
-                              C2.3 (Pattern Lifecycle)      │
-                                                            │
-C3.1 (Speaker Sidecar) ──▶ C3.2 (Enrollment) ──▶ C3.3 (Pipe Integration)
-                                                       │
-                                                       ▼
-                                                  C3.4 (HA Voice)
-                                                       │
-                                                       ▼
-                                                  C3.5 (Spatial Awareness)
-                                                       │
-C5.1 (Embedding Model) ──▶ C5.2 (ChromaDB) ──────────┤
-                                │                      │
-                                ▼                      │
-                           C5.3 (HOT Path)             │
-                                │                      │
-                                ▼                      │
-                           C5.4 (COLD Path)            │
-                                │                      │
-                                ▼                      ▼
-                           C5.5 (Pipe Integration) ──▶ C6.1 (Profile Engine)
-                                                            │
-                                                            ▼
-                                                  C6.2 (Onboarding)
-                                                            │
-                                                            ▼
-                                                  C6.3 (Age Adaptation)
-                                                       │         │
-                                                       ▼         ▼
-                                                  C6.4 (Parental) C6.5 (Voice Age)
-                                                       │
-                              C4.1 (Profile Engine) ◀──┘
-                                    │
-                                    ▼
-                              C4.2 (Nightly Evolution) ──▶ C4.3 (Personalization)
-                                                                │
-                                                                ▼
-                                                          C4.4 (Memory Proactive)
-```
-
-## What Can Start Now (No Dependencies)
-
-| Task | Description |
-|------|-------------|
-| C1.2 | Create database schema and logging infrastructure |
-| C1.3 | Fetch HA devices and build initial pattern set |
-| C3.1 | Build speaker ID sidecar container |
-| C5.1 | Pull embedding model into Ollama, verify API |
-| C9.1 | Build backup/restore CLI tool |
-| C10.1 | Hardware auto-detection and limit computation |
-
-## Blockers
-
-- **C1.1 (Core Pipe)** requires HA long-lived access token to execute device commands
-- **C3.2+** requires speaker-id sidecar deployed and accessible
-- **C4.x** requires self-learning, voice identity, and memory all operational
-- **C5.2+** requires embedding model (C5.1) operational
-- **C6.x** requires both memory (C5) and speaker-id (C3) for full functionality
-
----
-
-## External Projects (separate repos)
-
-- [ ] **Document Classification System** — standalone service that classifies documents by type, sensitivity, and access level. Consumed by Atlas Cortex (C8) for automatic `access_level` assignment, PII detection, and content categorization. Should support: file type detection, content analysis, sensitivity scoring, category tagging (financial, medical, personal, work, household). Could use a fine-tuned small model or rule-based engine. Lives outside this project as a general-purpose utility.
 
 ---
 
@@ -433,12 +307,7 @@ See [backup-restore.md](backup-restore.md) for full design.
 - Pre-operation safety snapshots (before migrations, bulk imports, upgrades)
 - Disk space monitoring and backup health checks
 
-### C9.3 — NAS Offsite Sync
-- rsync to NAS share after each backup
-- Ensures recovery even if Overwatch server fails completely
-- Configurable remote path via cortex.env
-
-### C9.4 — Voice-Accessible Backup Management
+### C9.3 — Voice-Accessible Backup Management
 - "Atlas, back yourself up" → manual backup
 - "Atlas, restore from yesterday" → restore with safety backup first
 - "Atlas, when was your last backup?" → query backup_log
@@ -491,3 +360,288 @@ See [context-management.md](context-management.md) for full design.
 - Clarify: pause, answer inline, offer to resume
 - Refine: halt, re-generate with refinement instruction
 - Voice interruption: echo cancellation, listen-during-playback, wake word detection mid-output
+
+---
+
+# Part 2: Integration Layer
+
+Everything below connects Atlas to the outside world. Designed as **discovery-based plugins** so anyone can install Atlas and it adapts to whatever services are available.
+
+## Phase I1: Service Discovery & Setup
+
+The installer that finds what's on the network and configures integrations.
+
+### I1.1 — Network Service Discovery
+- mDNS/Zeroconf scan for common services:
+  - Home Assistant (`_home-assistant._tcp`)
+  - Nextcloud (WebDAV probing on common ports/paths)
+  - MQTT brokers (`_mqtt._tcp`)
+  - CalDAV/CardDAV servers
+  - NAS shares (SMB/NFS discovery)
+  - IMAP/SMTP email servers
+- Manual fallback: user provides URLs/IPs for anything not auto-discovered
+- Store discovered services in `discovered_services` table
+
+### I1.2 — Service Configuration Wizard
+- Interactive setup for each discovered service:
+  - Home Assistant: guide user to create long-lived access token
+  - Nextcloud: OAuth or app password flow
+  - Email: IMAP credentials
+  - NAS: mount path or SMB credentials
+- Validate connectivity before saving
+- Store configs in `service_config` table (encrypted credentials)
+
+### I1.3 — Plugin Activation
+- Map discovered services → available plugins
+- Auto-activate plugins for confirmed services
+- Register plugin command patterns into Layer 2
+- Health check each plugin on startup
+- Graceful degradation: if a service goes down, plugin disables itself and re-checks periodically
+
+### I1.4 — Re-Discovery
+- User-triggered: "Atlas, scan for new services"
+- Nightly: lightweight re-scan for new/removed services
+- After network change (new IP, new subnet)
+- Detect when a previously-unavailable service comes online
+
+---
+
+## Phase I2: Home Assistant Integration
+
+The HA plugin — registers command patterns, discovers devices, executes actions.
+
+### I2.1 — HA Device Bootstrap
+- Fetch all entities from HA REST API (`/api/states`)
+- Populate `ha_devices` table
+- Fetch HA areas (`/api/config/area_registry/list`) and map entities to rooms
+- Generate initial command patterns for common device types (lights, switches, climate, locks, covers, fans, media, sensors)
+- Map friendly names → entity IDs with alias support
+- Identify and register presence sensors per area into `presence_sensors` table
+- Register all patterns into Layer 2 plugin registry
+
+### I2.2 — HA Command Execution
+- Pattern-matched commands → direct HA REST API calls (no LLM)
+- Room-scoped entity filtering when spatial context is available
+- Response generation: "Done — bedroom lights off"
+- Error handling: HA unreachable → graceful fallback to LLM (which may also fail, but at least explains)
+
+### I2.3 — HA WebSocket Listener (Real-Time)
+- Subscribe to HA state change events
+- Update `ha_devices.state` in real-time
+- Detect new devices added to HA between nightly scans
+- Feed real-time events to proactive suggestion engine (C4.4)
+
+---
+
+## Phase I3: Voice Pipeline & Spatial Awareness
+
+Connects speaker identification to HA's voice infrastructure for room-aware commands.
+
+### I3.1 — HA Voice Pipeline Integration
+- Modify Wyoming STT pipeline to pass audio to speaker-id sidecar (C3a)
+- Return identified user with transcribed text
+- HA automation context: "Derek said turn off lights" vs "Guest said..."
+
+### I3.2 — Spatial Awareness Engine
+- Map voice satellites to HA areas (`satellite_rooms` table)
+- Query HA presence sensors in real-time during Layer 0
+- Combine satellite ID + presence + speaker identity for room resolution
+- Multi-mic proximity: compare audio energy across satellites for same utterance
+- Ambiguity resolution: satellite+presence > satellite-only > presence-only > ask user
+- Room-scoped entity filtering: "the lights" → only entities in resolved room
+- Log all spatial resolutions to `room_context_log` for tuning
+
+### I3.3 — Contextual Multi-Room Commands
+- "Goodnight" triggers floor/house-scoped scenes based on location
+- "Turn off everything downstairs" uses floor mapping
+- User's current area informs default command scope
+
+---
+
+## Phase I4: Self-Learning Engine
+
+The system that makes Cortex smarter every day — learns from HA interactions.
+
+### I4.1 — Nightly Evolution Cron Job
+- Lightweight Python container with cron
+- Schedule: run at 3 AM daily
+- HA device discovery diff (new devices, removed devices, renamed)
+- LLM-powered pattern generation for new devices
+- Write results to `evolution_log`
+
+### I4.2 — Fallthrough Analyzer
+- Query interactions where `matched_layer = 'llm'` AND tool calls contain integration actions
+- Use LLM to generate regex patterns from the natural language that triggered fallthrough
+- Insert learned patterns into `command_patterns` with source `'learned'`
+- Confidence scoring and deduplication
+- Works for ANY plugin (HA, lists, knowledge queries — not just HA)
+
+### I4.3 — Pattern Lifecycle Management
+- Track `hit_count` per pattern
+- Prune zero-hit patterns after 30 days
+- Boost frequently-hit patterns
+- Merge similar patterns into generalized forms
+- Weekly report: "X% of device commands now handled without LLM"
+
+---
+
+## Phase I5: Knowledge Source Connectors
+
+Connect Atlas's knowledge/privacy system (C8 framework in Part 1) to actual data sources.
+
+### I5.1 — Knowledge Index Infrastructure
+- ChromaDB `cortex_knowledge` collection (separate from memory)
+- SQLite `knowledge_docs` metadata table + FTS5 mirror
+- Access gate: filter all queries by owner_id + access_level
+- Identity confidence determines access tier (private/shared/household/public)
+
+### I5.2 — Source Connector Plugins
+Each connector is a plugin discovered via I1:
+- **Nextcloud** (WebDAV): files, photos (EXIF), notes
+- **Email** (IMAP): subject, body, attachments
+- **Calendar** (CalDAV): events, shared calendars
+- **NAS** (SMB/NFS): documents on file shares
+- **HA history**: device states, automation logs
+- **Chat history**: prior Atlas conversations (always available)
+
+### I5.3 — Document Processing Pipeline
+- Text extraction: PDF, DOCX, XLSX, CSV, Markdown, plain text
+- Chunking for large documents
+- Owner assignment from source path / account
+- Access level assignment (private default, shared/household by path convention)
+- PII tagging (tag, don't redact — it's the user's own data)
+- Embed via Ollama, upsert to ChromaDB + FTS5
+
+### I5.4 — Privacy Enforcement
+- User-scoped queries: owner_id filter on all retrievals
+- Unknown speaker: household + public data only
+- Low-confidence speaker: shared + household + public only
+- Cross-user data requests blocked with natural explanation
+- Children's data visible to their parent (parental_controls)
+- Children cannot access parent's private data
+- Exclusion list: passwords, alarm codes, SSH keys, .env files, medical, financial
+
+### I5.5 — Sync & Freshness
+- Nightly full scan for all connected sources
+- Real-time: HA states (WebSocket), chat history (interaction logger)
+- Frequent: calendar (15min), email (30min)
+- On-demand reindex triggered by user request
+- Change detection via content hash (only re-embed modified docs)
+
+---
+
+## Phase I6: List Management
+
+Multi-backend lists with per-list permissions. See [lists.md](lists.md).
+
+### I6.1 — List Management System
+- List registry table with backend, permissions, aliases
+- Backend adapters (plugins from I1): HA to-do, Nextcloud CalDAV, file-based, Grocy, Todoist
+- List resolution: explicit name → category inference → conversation context → memory → ask
+- Permission enforcement: public lists allow anyone, private/shared respect access control
+- Auto-discovery of lists from connected services during nightly job
+- Remember routing preferences so user never repeats a clarification
+
+---
+
+## Phase I7: Offsite Backup
+
+Extends C9 backup to push copies to discovered NAS/storage.
+
+### I7.1 — NAS Offsite Sync
+- rsync to NAS share after each backup
+- Configurable remote path via cortex.env or discovered NAS
+- Ensures recovery even if the Atlas server fails completely
+
+---
+
+## Dependency Graph
+
+```
+PART 1 (Core Engine):
+
+C10.1 (Hardware) ──▶ C10.2 (Context) ──▶ C10.3 (Compaction)
+       │                                         │
+       └──▶ C10.4 (Model Selection)              ├──▶ C10.5 (Observability)
+                                                  └──▶ C10.6 (Interruption)
+
+C1.1 (Core Pipe) ──┬──▶ C1.3 (Filler Engine) ──▶ C1.4 (Register Model)
+                    └──▶ C1.5 (Plugin Registry)
+C1.2 (Logging) ────────────────────────────────────────────────────────
+
+C3a.1 (Speaker Sidecar) ──▶ C3a.2 (Enrollment) ──▶ C3a.3 (Pipe Integration)
+                                                          └──▶ C3a.4 (Age Est.)
+
+C5.1 (Embedding) ──▶ C5.2 (ChromaDB) ──▶ C5.3 (HOT) ──▶ C5.4 (COLD) ──▶ C5.5 (Integration)
+
+C5.5 + C3a.3 ──▶ C6.1 (Profiles) ──▶ C6.2 (Onboarding) ──▶ C6.3 (Age Adapt.)
+                                                                    │
+                                                            C6.4 (Parental)
+
+C6.4 ──▶ C4.1 (Emotion) ──▶ C4.2 (Nightly) ──▶ C4.3 (Personalization) ──▶ C4.4 (Proactive)
+
+C7.1 (Avatar Server) ──▶ C7.2 → C7.3 → C7.4 → C7.5/C7.6/C7.7/C7.8 → C7.9
+
+C9.1 (Backup CLI) ──▶ C9.2 (Nightly) ──▶ C9.3 (Voice Backup)
+
+
+PART 2 (Integration Layer):
+
+I1.1 (Discovery) ──▶ I1.2 (Config Wizard) ──▶ I1.3 (Plugin Activation)
+                                                       │
+       ┌───────────────────────────────────────────────┤
+       │               │               │               │
+       ▼               ▼               ▼               ▼
+I2.1 (HA Bootstrap) I5.1 (Knowledge)  I6.1 (Lists)   I7.1 (NAS Backup)
+       │               │
+       ▼               ▼
+I2.2 (HA Commands)  I5.2 (Connectors) ──▶ I5.3 (Doc Pipeline)
+       │                                          │
+       ▼                                          ▼
+I2.3 (HA WebSocket)                        I5.4 (Privacy) ──▶ I5.5 (Sync)
+       │
+       ├──▶ I3.1 (Voice Pipeline) ──▶ I3.2 (Spatial) ──▶ I3.3 (Multi-Room)
+       │
+       └──▶ I4.1 (Nightly Evolution) ──▶ I4.2 (Fallthrough) ──▶ I4.3 (Lifecycle)
+```
+
+## What Can Start Now (No Dependencies)
+
+### Part 1 — Start immediately:
+
+| Task | Description |
+|------|-------------|
+| C1.1 | Core pipe function with plugin registry (no HA needed) |
+| C1.2 | Create database schema and logging infrastructure |
+| C3a.1 | Build speaker ID sidecar container |
+| C5.1 | Pull embedding model into Ollama, verify API |
+| C7.1 | Avatar server container skeleton |
+| C9.1 | Build backup/restore CLI tool |
+| C10.1 | Hardware auto-detection and limit computation |
+
+### Part 2 — Start after C1.1 is operational:
+
+| Task | Description |
+|------|-------------|
+| I1.1 | Network service discovery (mDNS/Zeroconf scan) |
+
+## Blockers
+
+### Part 1:
+- **C1.1** no longer blocked — HA dependency moved to Part 2
+- **C3a.2+** requires speaker-id sidecar deployed
+- **C4.x** requires profiles + memory + voice identity
+- **C5.2+** requires embedding model (C5.1) operational
+- **C6.x** requires both memory (C5) and speaker-id (C3a)
+
+### Part 2:
+- **I2.x** requires Home Assistant discovered + access token provided
+- **I3.x** requires HA voice pipeline + speaker-id sidecar
+- **I5.x** requires at least one knowledge source discovered
+- **All of Part 2** requires C1.1 (core pipe) to be operational first
+
+---
+
+## External Projects (separate repos)
+
+- [ ] **Document Classification System** — standalone service that classifies documents by type, sensitivity, and access level. Consumed by Atlas Cortex (I5) for automatic `access_level` assignment, PII detection, and content categorization. Should support: file type detection, content analysis, sensitivity scoring, category tagging (financial, medical, personal, work, household). Could use a fine-tuned small model or rule-based engine. Lives outside this project as a general-purpose utility.

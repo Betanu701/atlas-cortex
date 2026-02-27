@@ -35,9 +35,9 @@ User Message (typed or voice)
 │  Layer 1: Instant    (~5ms)         │
 │    Date, math, greetings, identity  │
 │                                     │
-│  Layer 2: Commands   (~100ms)       │
-│    HA device control, learned       │
-│    patterns, direct API calls       │
+│  Layer 2: Plugins    (~100ms)       │
+│    Discovered integrations:         │
+│    HA, lists, knowledge, etc.       │
 │                                     │
 │  Layer 3: LLM        (~500-4000ms)  │
 │    Filler stream → Ollama API       │
@@ -49,20 +49,19 @@ User Message (typed or voice)
          ▼ (nightly)
 ┌─────────────────────────────────────┐
 │       Evolution Engine              │
-│  • Discover new HA devices          │
+│  • Discover new devices/services    │
 │  • Learn patterns from fallthrough  │
 │  • Evolve emotional profiles        │
 │  • Optimize pattern database        │
 └─────────────────────────────────────┘
 ```
 
-## Hardware Target
+## Hardware Target (auto-detected)
 
-- **Server:** Unraid (Overwatch) at 192.168.3.8
-- **GPU:** AMD Radeon RX 7900 XT (20GB VRAM, RDNA3)
-- **CPU:** AMD Ryzen 7 5700G (8c/16t, 128GB DDR4)
-- **Models:** Qwen3 30B-A3B (thinking), Qwen2.5 14B (fast)
-- **Stack:** Ollama (ROCm) + Open WebUI + SearXNG + faster-whisper + piper
+Atlas auto-detects hardware at install. Works on any system with Ollama:
+- **GPU**: AMD (ROCm), NVIDIA (CUDA), Intel (oneAPI), Apple (Metal), or CPU-only
+- **Models**: Auto-selected based on VRAM — from 1.7B (4GB GPU) to 72B (48GB+)
+- See [docs/context-management.md](docs/context-management.md) for hardware detection details
 
 ## Project Structure
 
@@ -101,25 +100,43 @@ atlas-cortex/
 
 ## Implementation Phases
 
+### Part 1: Core Engine (portable, no infrastructure needed)
+
 | Phase | Name | Status | Description |
 |-------|------|--------|-------------|
-| C1 | Core Pipe | 🔲 Planned | Sentiment, instant answers, HA commands, filler streaming, logging |
-| C2 | Self-Learning | 🔲 Planned | Nightly device discovery, fallthrough analysis, pattern generation |
-| C3 | Voice Identity | 🔲 Planned | Speaker recognition, enrollment, spatial awareness |
+| C1 | Core Pipe & Logging | 🔲 Planned | Sentiment, instant answers, plugin registry, filler streaming, logging |
+| C3a | Voice Identity | 🔲 Planned | Speaker recognition, enrollment, age estimation |
 | C4 | Emotional Evolution | 🔲 Planned | Rapport tracking, personality drift, proactive suggestions |
 | C5 | Memory System | 🔲 Planned | HOT/COLD paths, vector search, BM25, RRF fusion, ChromaDB |
 | C6 | User Profiles | 🔲 Planned | Age-awareness, onboarding, parental controls, profile evolution |
 | C7 | Avatar System | 🔲 Future | Phoneme-to-viseme lip-sync, emotion expressions, multi-skin |
-| C8 | Knowledge Access | 🔲 Future | File/email/message indexing, user-scoped privacy, source connectors |
+| C9 | Backup & Restore | 🔲 Planned | Automated backups, one-command restore, voice commands |
+| C10 | Context & Hardware | 🔲 Planned | Context windows, compaction, overflow recovery, hardware auto-detect |
+
+### Part 2: Integration Layer (discovered at install)
+
+| Phase | Name | Status | Description |
+|-------|------|--------|-------------|
+| I1 | Service Discovery | 🔲 Planned | mDNS/Zeroconf scan, config wizard, plugin activation |
+| I2 | Home Assistant | 🔲 Planned | Device bootstrap, command execution, real-time WebSocket |
+| I3 | Voice Pipeline & Spatial | 🔲 Planned | HA Wyoming integration, room awareness, multi-mic proximity |
+| I4 | Self-Learning | 🔲 Planned | Nightly device discovery, fallthrough analysis, pattern learning |
+| I5 | Knowledge Sources | 🔲 Planned | Nextcloud, email, calendar, NAS connectors, privacy enforcement |
+| I6 | List Management | 🔲 Planned | Multi-backend lists, permissions, smart resolution |
+| I7 | Offsite Backup | 🔲 Planned | NAS sync for disaster recovery |
 
 See [docs/phases.md](docs/phases.md) for detailed task breakdown and dependency graph.
 
 ## Prerequisites
 
-- [Ollama](https://ollama.com) with ROCm (AMD GPU) or CUDA (NVIDIA)
+**Part 1 (Core Engine):**
+- [Ollama](https://ollama.com) (any GPU or CPU-only)
 - [Open WebUI](https://github.com/open-webui/open-webui) v0.8.5+
-- [Home Assistant](https://www.home-assistant.io/) with long-lived access token
 - Python 3.11+
+
+**Part 2 (Integration — all optional, discovered at install):**
+- [Home Assistant](https://www.home-assistant.io/) with long-lived access token
+- Nextcloud, CalDAV, IMAP, NAS shares — whatever you have
 
 ## Backup & Restore
 
