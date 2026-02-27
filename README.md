@@ -8,6 +8,7 @@ A self-evolving AI assistant system built on top of [Open WebUI](https://github.
 - **Direct smart home control** (~100ms) — executes Home Assistant commands via API, no LLM round trip
 - **Self-learning patterns** — commands that fall through to the LLM are analyzed nightly and converted into fast regex patterns
 - **Sentiment-aware filler streaming** — starts responding immediately with contextual phrases while the LLM generates the real answer
+- **Spatial awareness** — knows which room you're in via satellite mics, presence sensors, and speaker identity to scope commands automatically
 - **Voice identification** — recognizes household members by voice and personalizes responses
 - **Emotional evolution** — builds unique personality traits per user relationship over time
 

@@ -119,6 +119,141 @@ Lightweight CPU-based container using [resemblyzer](https://github.com/resemble-
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Spatial Awareness — Room/Area Context
+
+Atlas Cortex knows *where* you are, not just *who* you are. This transforms ambiguous commands like "turn off the lights" into precise actions targeting the correct room.
+
+### Signal Sources (combined for confidence)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   Spatial Context Resolution                     │
+│                                                                  │
+│  Signal 1: Satellite ID (primary)                    ~0ms       │
+│    • Each voice satellite is assigned to an HA area             │
+│    • Wyoming protocol includes device_id in metadata            │
+│    • "Voice came from kitchen satellite" → room = kitchen       │
+│    • Simplest, most reliable signal                             │
+│                                                                  │
+│  Signal 2: Multi-Mic Proximity                       ~50ms      │
+│    • If multiple satellites hear the same utterance,            │
+│      compare audio energy / SNR across them                     │
+│    • Loudest/clearest mic = closest to speaker                  │
+│    • Resolves ambiguity when rooms are adjacent                 │
+│    • Optional: rough triangulation with 3+ mics                 │
+│                                                                  │
+│  Signal 3: Presence Sensors                          ~0ms       │
+│    • Motion sensors (PIR): "motion detected in office"          │
+│    • mmWave radar: "person present in bedroom" (even still)     │
+│    • BLE beacons / phone tracking: per-person room location     │
+│    • Door contact sensors: infer room transitions               │
+│    • HA provides this via entity states in real-time            │
+│                                                                  │
+│  Signal 4: Speaker + Presence Fusion                 ~10ms      │
+│    • "Derek's voice" + "person in office" + "office mic"        │
+│    • All three agree → confidence = very high                   │
+│    • Disagreement → fallback to satellite ID (most reliable)    │
+│                                                                  │
+│  Output: { room: "office", area: "upstairs",                    │
+│            confidence: 0.95, signals: [...] }                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### How It Affects Command Resolution
+
+```
+Without spatial awareness:
+  User: "Turn off the lights"
+  Atlas: "Which lights? You have 8 light groups."
+
+With spatial awareness:
+  User (from office satellite): "Turn off the lights"
+  Atlas knows: room=office, user=Derek
+  Atlas: "Done — office lights off."
+
+Smarter scenarios:
+  User (from kitchen, 10 PM): "I'm heading to bed"
+  Atlas knows: room=kitchen, user=Derek, time=late
+  Atlas: "Night, Derek. Locking up — kitchen and living room
+          lights off, bedroom set to 20%."
+  → Triggers HA "goodnight" scene scoped to context
+```
+
+### Room Context Data Flow
+
+```
+Voice Satellite (kitchen)
+    │
+    ├── device_id: "satellite_kitchen"
+    ├── audio → faster-whisper → text
+    └── audio → speaker-id → "Derek"
+                    │
+                    ▼
+          Atlas Cortex Layer 0
+                    │
+    ┌───────────────┼────────────────────┐
+    │               │                    │
+    ▼               ▼                    ▼
+satellite_rooms    ha_presence       speaker_profiles
+table lookup       sensor query      voice match
+    │               │                    │
+    │  room:kitchen │  motion:kitchen    │  user:Derek
+    └───────────────┼────────────────────┘
+                    │
+                    ▼
+            Spatial Context:
+            { room: "kitchen",
+              area: "downstairs",
+              user: "Derek",
+              confidence: 0.98,
+              nearby_entities: [
+                "light.kitchen",
+                "switch.kitchen_fan",
+                "sensor.kitchen_temp"
+              ]}
+                    │
+                    ▼
+             Layer 2: "turn off the lights"
+             → matches light.kitchen (room-scoped)
+             → POST /api/services/light/turn_off
+```
+
+### HA Area Integration
+
+Home Assistant already organizes entities into **Areas** (rooms) and **Floors**. Cortex leverages this:
+
+```sql
+-- Satellite-to-room mapping
+satellite_rooms (
+    satellite_id TEXT PRIMARY KEY,    -- Wyoming device_id
+    area_id TEXT NOT NULL,            -- HA area: "kitchen", "office", etc.
+    floor TEXT,                       -- "upstairs", "downstairs", "basement"
+    mic_position TEXT                 -- JSON: {"x": 3.2, "y": 1.5} for triangulation
+)
+
+-- Presence sensor mapping (which sensors indicate presence in which area)
+presence_sensors (
+    entity_id TEXT PRIMARY KEY,       -- "binary_sensor.office_motion"
+    area_id TEXT NOT NULL,            -- "office"
+    sensor_type TEXT,                 -- "motion" | "mmwave" | "ble" | "door"
+    priority INTEGER DEFAULT 1        -- higher = more trusted (mmwave > motion)
+)
+```
+
+### Ambiguity Resolution Rules
+
+When a command doesn't specify a room:
+
+1. **Satellite room matches presence** → use that room (highest confidence)
+2. **Satellite room only** → use satellite room (good confidence)
+3. **Presence only (typed command)** → use room with most recent motion/presence
+4. **Multiple presence signals** → use the room matching the identified user
+5. **No location data** → ask: "Which room?" (only as last resort)
+
+For commands that affect multiple rooms (e.g., "goodnight"):
+- Use spatial context to determine *scope* — "everything downstairs" vs "whole house"
+- User's current floor/area informs the default scope
+
 ## Filler Streaming — How It Works
 
 The key insight: **start talking before you have the answer**, then seamlessly blend in the real response.
