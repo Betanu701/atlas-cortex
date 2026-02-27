@@ -280,6 +280,10 @@ Actual LLM latency: 800ms (hidden behind filler)
 
 ### Filler Pools (default, personalized over time)
 
+Fillers are selected based on **two dimensions**: sentiment (emotional tone) and confidence (certainty level). Sentiment filler goes first, confidence framing appends if needed.
+
+#### Sentiment Fillers
+
 | Sentiment | Fillers |
 |-----------|---------|
 | Greeting | "Hey!", "Good morning!", "What's up?" |
@@ -288,6 +292,16 @@ Actual LLM latency: 800ms (hidden behind filler)
 | Command | *(no filler — execute directly)* |
 | Excited | "That's awesome! ", "Hell yeah! " |
 | Late night | "Still at it? ", "Alright, " |
+
+#### Confidence Fillers (appended when confidence < 0.8)
+
+| Confidence | Fillers |
+|------------|---------|
+| Medium (0.5–0.8) | "I think — ", "If I remember right — ", "Pretty sure — " |
+| Low (0.2–0.5) | "I'm not 100% on that — checking now... ", "Let me verify... " |
+| None (< 0.2) | "I genuinely don't know this one. ", "I'd rather not guess — " |
+
+See [grounding.md](grounding.md) for the full confidence-aware filler system, including grounding loop integration and combined sentiment+confidence selection.
 
 ### LLM System Prompt Injection
 
