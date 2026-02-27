@@ -283,6 +283,50 @@ Visual face for Atlas displayed on satellite screens. See [avatar-system.md](ava
 
 ---
 
+## Phase C8: Knowledge Access & Data Privacy (Future)
+
+Personal file/message/calendar indexing with strict user-scoped access control. See [knowledge-access.md](knowledge-access.md) for full design.
+
+### C8.1 — Knowledge Index Infrastructure
+- ChromaDB `cortex_knowledge` collection (separate from memory)
+- SQLite `knowledge_docs` metadata table + FTS5 mirror
+- Access gate: filter all queries by owner_id + access_level
+- Identity confidence determines access tier (private/shared/household/public)
+
+### C8.2 — Source Connectors
+- Nextcloud (WebDAV): files, photos (EXIF), notes
+- Email (IMAP): subject, body, attachments
+- Calendar (CalDAV): events, shared calendars
+- NAS (SMB/NFS): documents on file shares
+- HA history: device states, automation logs
+- Chat history: prior Atlas conversations
+
+### C8.3 — Document Processing Pipeline
+- Text extraction: PDF, DOCX, XLSX, CSV, Markdown, plain text
+- Chunking for large documents
+- Owner assignment from source path / account
+- Access level assignment (private default, shared/household by path convention)
+- PII tagging (tag, don't redact — it's the user's own data)
+- Embed via Ollama, upsert to ChromaDB + FTS5
+
+### C8.4 — Privacy Enforcement
+- User-scoped queries: owner_id filter on all retrievals
+- Unknown speaker: household + public data only
+- Low-confidence speaker: shared + household + public only
+- Cross-user data requests blocked with natural explanation
+- Children's data visible to their parent (parental_controls)
+- Children cannot access parent's private data
+- Exclusion list: passwords, alarm codes, SSH keys, .env files, medical, financial
+
+### C8.5 — Sync & Freshness
+- Nightly full scan for all sources
+- Real-time: HA states (WebSocket), chat history (interaction logger)
+- Frequent: calendar (15min), email (30min)
+- On-demand reindex triggered by user request
+- Change detection via content hash (only re-embed modified docs)
+
+---
+
 ## Dependency Graph
 
 ```
