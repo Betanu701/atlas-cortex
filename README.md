@@ -14,6 +14,7 @@ A self-evolving AI assistant system built on top of [Open WebUI](https://github.
 - **Age-appropriate responses** — adapts vocabulary, tone, and content filtering for toddlers, children, teens, and adults
 - **Persistent memory** — HOT/COLD architecture with vector search, BM25, and RRF fusion for instant context recall
 - **Conversational onboarding** — learns about users naturally through conversation, never overwrites, always builds upon
+- **Animated avatar** — lip-synced face on satellite displays using phoneme-to-viseme mapping, emotion-driven expressions
 
 ## Architecture
 
@@ -97,6 +98,7 @@ atlas-cortex/
 | C4 | Emotional Evolution | 🔲 Planned | Rapport tracking, personality drift, proactive suggestions |
 | C5 | Memory System | 🔲 Planned | HOT/COLD paths, vector search, BM25, RRF fusion, ChromaDB |
 | C6 | User Profiles | 🔲 Planned | Age-awareness, onboarding, parental controls, profile evolution |
+| C7 | Avatar System | 🔲 Future | Phoneme-to-viseme lip-sync, emotion expressions, multi-skin |
 
 See [docs/phases.md](docs/phases.md) for detailed task breakdown and dependency graph.
 
