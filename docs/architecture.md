@@ -316,6 +316,10 @@ Selection is rule-based (no LLM needed for routing):
 | Core Pipe | Open WebUI Pipe function (Python) | Runs inside Open WebUI container |
 | Sentiment | VADER (vaderSentiment) | CPU, <1ms |
 | Speaker ID | resemblyzer | CPU, ~50ms, ~200MB RAM |
+| Memory (vector) | ChromaDB (embedded mode) | CPU, ~50MB RAM, persistent SQLite |
+| Memory (BM25) | SQLite FTS5 | CPU, sub-ms, built into Python |
+| Embeddings | Ollama `nomic-embed-text` | CPU, ~5ms/embed, 274MB |
+| Reranker | cross-encoder/ms-marco-MiniLM (optional) | CPU, ~20ms |
 | Fast LLM | Qwen2.5 14B (abliterated) | RX 7900 XT, 55 tok/s |
 | Thinking LLM | Qwen3 30B-A3B (MoE) | RX 7900 XT, 75 tok/s |
 | Smart Home | Home Assistant REST API | Proxmox VM |
