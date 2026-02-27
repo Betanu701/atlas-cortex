@@ -6,8 +6,10 @@
 |-------|------|--------|---------------|
 | C1 | Core Pipe | 🔲 Planned | HA long-lived access token |
 | C2 | Self-Learning Engine | 🔲 Planned | Phase C1 complete |
-| C3 | Voice Identity | 🔲 Planned | Phase C1 complete |
-| C4 | Emotional Evolution | 🔲 Planned | Phase C2 + C3 complete |
+| C3 | Voice Identity + Spatial | 🔲 Planned | Phase C1 complete |
+| C4 | Emotional Evolution | 🔲 Planned | Phase C2 + C3 + C5 complete |
+| C5 | Memory System (HOT/COLD) | 🔲 Planned | Phase C1 complete |
+| C6 | User Profiles & Age-Awareness | 🔲 Planned | Phase C3 + C5 complete |
 
 ## Phase C1: Core Pipe
 
@@ -146,6 +148,83 @@ The personality layer that makes Atlas feel human.
 
 ---
 
+## Phase C5: Memory System (HOT/COLD Architecture)
+
+Adapted from [agentic-memory-quest](https://github.com/Betanu701/agentic-memory-quest). See [memory-system.md](memory-system.md) for full design.
+
+### C5.1 — Embedding Model Setup
+- Pull `nomic-embed-text` into Ollama (274MB, CPU-friendly)
+- Verify embedding API: `POST /api/embeddings` returns 768-dim vectors
+- Benchmark: target <10ms per embedding on CPU
+
+### C5.2 — ChromaDB Integration
+- Deploy ChromaDB in embedded mode (inside Cortex pipe or sidecar)
+- Create `cortex_memory` collection with HNSW index
+- Persistent storage on mounted volume
+- Metadata schema: user_id, type, source, tags, supersedes, ttl, confidence
+
+### C5.3 — HOT Path (Read)
+- Compute query embedding via Ollama
+- Sparse search: SQLite FTS5 (BM25 scoring)
+- Dense search: ChromaDB vector similarity (cosine)
+- RRF Fusion (k=60) to merge ranked lists
+- Optional cross-encoder reranker (`ms-marco-MiniLM-L-6-v2`)
+- Return top-K (default 8) MemoryHits, sub-50ms target
+
+### C5.4 — COLD Path (Write)
+- asyncio.Queue for non-blocking writes
+- PII redactor (regex-based: emails, phones, SSN, CC numbers)
+- Memory decider: heuristics for keep/drop/dedup (preference, fact, chit-chat)
+- Embed via Ollama, upsert to ChromaDB + FTS5 mirror
+- Append-only: corrections link to originals, never overwrite
+- Content-hash dedup for idempotency
+
+### C5.5 — Memory Integration with Pipe Layers
+- Layer 0: HOT query to retrieve user memories on every request
+- Layer 1: Memory-powered instant answers ("what's my daughter's name?")
+- Layer 2: Memory-powered personalized defaults ("set lights" → remembered preference)
+- Layer 3: Inject memory context into LLM system prompt
+- COLD path fires after every interaction to capture new memories
+
+---
+
+## Phase C6: User Profiles & Age-Awareness
+
+See [user-profiles.md](user-profiles.md) for full design.
+
+### C6.1 — User Profile Engine
+- SQLite `user_profiles` table for fast structured queries
+- Profile fields: age, age_group, vocabulary_level, preferred_tone, communication_style
+- Append-only profile evolution with confidence scoring
+- Parent-child relationships (`parent_user_id` foreign key)
+
+### C6.2 — Conversational Onboarding
+- First encounter detection (new user_id or unknown voice)
+- Natural "meeting someone new" dialogue flow
+- Gradual profile building through conversation (not interrogation)
+- "We've talked before" handling — search memory, re-link profiles
+
+### C6.3 — Age-Appropriate Response Adaptation
+- Response profiles: toddler, child, teen, adult, unknown/neutral
+- Vocabulary filtering by age group
+- Content safety filtering for children
+- Tone adaptation: warm+simple (toddler) → casual+respectful (teen) → personalized (adult)
+- System prompt modifier injected based on detected age group
+
+### C6.4 — Parental Controls
+- `parental_controls` table: content filter level, allowed devices, allowed hours
+- Children can only control devices on their allowed list
+- Time-based restrictions (e.g., no smart home control after 9 PM for kids)
+- Sensitive commands require parent confirmation
+
+### C6.5 — Voice-Based Age Estimation
+- Extract pitch, cadence, speech rate from speaker-id audio
+- Vocabulary complexity analysis from transcript
+- Low-confidence heuristic (used as initial hint only, refined through interaction)
+- Never tell a user their estimated age — only use internally for tone
+
+---
+
 ## Dependency Graph
 
 ```
@@ -166,13 +245,33 @@ C3.1 (Speaker Sidecar) ──▶ C3.2 (Enrollment) ──▶ C3.3 (Pipe Integrat
                                                        ▼
                                                   C3.5 (Spatial Awareness)
                                                        │
+C5.1 (Embedding Model) ──▶ C5.2 (ChromaDB) ──────────┤
+                                │                      │
+                                ▼                      │
+                           C5.3 (HOT Path)             │
+                                │                      │
+                                ▼                      │
+                           C5.4 (COLD Path)            │
+                                │                      │
+                                ▼                      ▼
+                           C5.5 (Pipe Integration) ──▶ C6.1 (Profile Engine)
+                                                            │
+                                                            ▼
+                                                  C6.2 (Onboarding)
+                                                            │
+                                                            ▼
+                                                  C6.3 (Age Adaptation)
+                                                       │         │
+                                                       ▼         ▼
+                                                  C6.4 (Parental) C6.5 (Voice Age)
+                                                       │
                               C4.1 (Profile Engine) ◀──┘
                                     │
                                     ▼
                               C4.2 (Nightly Evolution) ──▶ C4.3 (Personalization)
                                                                 │
                                                                 ▼
-                                                          C4.4 (Memory)
+                                                          C4.4 (Memory Proactive)
 ```
 
 ## What Can Start Now (No Dependencies)
@@ -182,9 +281,12 @@ C3.1 (Speaker Sidecar) ──▶ C3.2 (Enrollment) ──▶ C3.3 (Pipe Integrat
 | C1.2 | Create database schema and logging infrastructure |
 | C1.3 | Fetch HA devices and build initial pattern set |
 | C3.1 | Build speaker ID sidecar container |
+| C5.1 | Pull embedding model into Ollama, verify API |
 
 ## Blockers
 
 - **C1.1 (Core Pipe)** requires HA long-lived access token to execute device commands
 - **C3.2+** requires speaker-id sidecar deployed and accessible
-- **C4.x** requires both self-learning and voice identity operational
+- **C4.x** requires self-learning, voice identity, and memory all operational
+- **C5.2+** requires embedding model (C5.1) operational
+- **C6.x** requires both memory (C5) and speaker-id (C3) for full functionality

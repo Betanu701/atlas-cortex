@@ -11,6 +11,9 @@ A self-evolving AI assistant system built on top of [Open WebUI](https://github.
 - **Spatial awareness** — knows which room you're in via satellite mics, presence sensors, and speaker identity to scope commands automatically
 - **Voice identification** — recognizes household members by voice and personalizes responses
 - **Emotional evolution** — builds unique personality traits per user relationship over time
+- **Age-appropriate responses** — adapts vocabulary, tone, and content filtering for toddlers, children, teens, and adults
+- **Persistent memory** — HOT/COLD architecture with vector search, BM25, and RRF fusion for instant context recall
+- **Conversational onboarding** — learns about users naturally through conversation, never overwrites, always builds upon
 
 ## Architecture
 
@@ -64,10 +67,13 @@ atlas-cortex/
 ├── docs/
 │   ├── architecture.md        # Detailed system architecture
 │   ├── data-model.md          # Database schema and relationships
+│   ├── memory-system.md       # HOT/COLD memory with vector search
+│   ├── user-profiles.md       # Age-awareness, onboarding, profile evolution
 │   ├── phases.md              # Implementation phases and dependencies
 │   └── infrastructure.md      # Current server/container topology
 ├── src/
 │   ├── pipe/                  # Open WebUI Pipe function (core)
+│   ├── memory/                # HOT/COLD memory engine
 │   ├── evolution/             # Nightly cron job scripts
 │   └── speaker-id/            # Speaker identification sidecar
 ├── config/
@@ -77,6 +83,7 @@ atlas-cortex/
 └── tests/
     ├── test_sentiment.py
     ├── test_patterns.py
+    ├── test_memory.py
     └── test_instant.py
 ```
 
@@ -86,8 +93,10 @@ atlas-cortex/
 |-------|------|--------|-------------|
 | C1 | Core Pipe | 🔲 Planned | Sentiment, instant answers, HA commands, filler streaming, logging |
 | C2 | Self-Learning | 🔲 Planned | Nightly device discovery, fallthrough analysis, pattern generation |
-| C3 | Voice Identity | 🔲 Planned | Speaker recognition, enrollment, per-user context |
+| C3 | Voice Identity | 🔲 Planned | Speaker recognition, enrollment, spatial awareness |
 | C4 | Emotional Evolution | 🔲 Planned | Rapport tracking, personality drift, proactive suggestions |
+| C5 | Memory System | 🔲 Planned | HOT/COLD paths, vector search, BM25, RRF fusion, ChromaDB |
+| C6 | User Profiles | 🔲 Planned | Age-awareness, onboarding, parental controls, profile evolution |
 
 See [docs/phases.md](docs/phases.md) for detailed task breakdown and dependency graph.
 
