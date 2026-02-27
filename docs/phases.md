@@ -7,19 +7,23 @@ Atlas Cortex is split into two independent parts so that the core engine is **po
 | | Part 1: Core Engine | Part 2: Integration Layer |
 |---|---|---|
 | **What** | The brain — personality, memory, context, avatar, grounding | The body — connects to the real world (smart home, files, network) |
-| **Requires** | Ollama + Open WebUI + Python | Discovered at install time (HA, Nextcloud, NAS, etc.) |
-| **Portable?** | Yes — works on any machine with a GPU (or CPU) | Adapts to whatever services are found |
-| **Key design** | No hardcoded infrastructure references | Plugin/discovery architecture |
+| **Requires** | Any LLM backend + Python (Ollama default, others supported) | Discovered at install time (HA, Nextcloud, NAS, etc.) |
+| **Portable?** | Yes — works on any machine with any LLM backend | Adapts to whatever services are found |
+| **Key design** | No hardcoded backends or infrastructure | Plugin/discovery architecture |
 
 ### How It Works for Others
 
 When someone installs Atlas Cortex on their own system:
 
-1. **Part 1 installs first** — hardware detection, model selection, core pipe, memory, profiles (all generic)
-2. **Part 2 runs service discovery** — scans the network for Home Assistant, Nextcloud, CalDAV, IMAP, NAS shares, etc.
-3. **User confirms** what was found and provides credentials (API tokens, passwords)
-4. **Integration plugins activate** based on discovered services
-5. **System works immediately** with whatever was found — no HA? No problem, just no smart home commands
+1. **Installer runs** — detects hardware, finds existing LLM backends (or offers to install one)
+2. **Selects models** — recommends best models for detected GPU/RAM, pulls them
+3. **Core starts** — Atlas Cortex server (:5100) + optional Open WebUI Pipe function
+4. **Service discovery** — scans network for HA, Nextcloud, CalDAV, IMAP, NAS, etc.
+5. **User configures** — confirms services, provides credentials (CLI or via conversation with Atlas)
+6. **Plugins activate** — integrations register into Layer 2
+7. **LLM-assisted refinement** — once running, Atlas helps configure the rest conversationally
+
+See [installation.md](installation.md) for the full installer design.
 
 ---
 
@@ -29,14 +33,15 @@ When someone installs Atlas Cortex on their own system:
 
 | Phase | Name | Status | Prerequisites |
 |-------|------|--------|---------------|
-| C1 | Core Pipe & Logging | 🔲 Planned | None (Ollama + Open WebUI only) |
+| C0 | Installer & Backend Abstraction | 🔲 Planned | None |
+| C1 | Core Pipe & Logging | 🔲 Planned | C0 |
 | C3a | Voice Identity (generic) | 🔲 Planned | None |
 | C4 | Emotional Evolution | 🔲 Planned | C3a + C5 + C6 |
 | C5 | Memory System (HOT/COLD) | 🔲 Planned | None |
 | C6 | User Profiles & Age-Awareness | 🔲 Planned | C3a + C5 |
 | C7 | Avatar System | 🔲 Planned | None |
 | C9 | Backup & Restore | 🔲 Planned | None |
-| C10 | Context Management & Hardware | 🔲 Planned | None |
+| C10 | Context Management & Hardware | 🔲 Planned | C0 |
 
 ### Part 2: Integration Layer (discovered at install)
 
@@ -54,7 +59,49 @@ When someone installs Atlas Cortex on their own system:
 
 # Part 1: Core Engine
 
-Everything below works with just Ollama + Open WebUI. No Home Assistant, no specific servers, no network knowledge.
+Everything below works with any LLM backend. No Home Assistant, no specific servers, no network knowledge.
+
+## Phase C0: Installer & Backend Abstraction
+
+See [installation.md](installation.md) for full design.
+
+### C0.1 — LLM Provider Interface
+- Abstract `LLMProvider` class: `chat()`, `embed()`, `list_models()`, `health()`
+- `OllamaProvider` — talks to Ollama's `/api/chat`, `/api/embeddings`
+- `OpenAICompatibleProvider` — works with vLLM, LocalAI, LM Studio, llama.cpp, etc.
+- Provider selected at install time, configurable in `cortex.env`
+
+### C0.2 — Embedding Provider Interface
+- Separate from LLM provider (can be different backends)
+- Options: Ollama, OpenAI-compatible, sentence-transformers (in-process), fastembed
+- Fallback: if LLM provider has no embedding support, use in-process sentence-transformers
+
+### C0.3 — Hardware Detection & Model Selection
+- GPU detection (AMD/NVIDIA/Intel/Apple/CPU-only)
+- VRAM/RAM budgets, context window limits
+- Model recommendations based on hardware tier
+- Already designed in C10.1 — shared implementation
+
+### C0.4 — LLM Backend Discovery
+- Probe localhost + local network for running LLM backends
+- Support: Ollama, LM Studio, vLLM, LocalAI, llama.cpp, koboldcpp, text-gen-webui
+- Offer to install if nothing found (default: Ollama)
+- Validate connectivity before saving
+
+### C0.5 — Chat UI Detection & Integration
+- Detect Open WebUI → offer Pipe function mode
+- Always start standalone server (:5100) with OpenAI-compatible API
+- This makes Atlas work with ANY client that supports OpenAI API
+- HA conversation agent can point to Atlas server directly
+
+### C0.6 — CLI Installer
+- `python -m cortex.install` — interactive CLI wizard
+- Two-stage: deterministic setup first (no LLM), then LLM-assisted refinement
+- Generates `cortex.env` with all configuration
+- Creates database, pulls models, starts server
+- Offers to run Part 2 discovery immediately or later
+
+---
 
 ## Phase C1: Core Pipe & Logging
 
@@ -560,25 +607,31 @@ Extends C9 backup to push copies to discovered NAS/storage.
 ```
 PART 1 (Core Engine):
 
-C10.1 (Hardware) ──▶ C10.2 (Context) ──▶ C10.3 (Compaction)
-       │                                         │
-       └──▶ C10.4 (Model Selection)              ├──▶ C10.5 (Observability)
-                                                  └──▶ C10.6 (Interruption)
-
+C0.1 (LLM Provider) ──┬──▶ C0.4 (Backend Discovery) ──▶ C0.5 (UI Detection)
+C0.2 (Embed Provider) ─┤                                        │
+C0.3 (Hardware) ────────┘                                        ▼
+                                                            C0.6 (Installer)
+                                                                 │
+                        ┌────────────────────────────────────────┘
+                        ▼
 C1.1 (Core Pipe) ──┬──▶ C1.3 (Filler Engine) ──▶ C1.4 (Register Model)
                     └──▶ C1.5 (Plugin Registry)
 C1.2 (Logging) ────────────────────────────────────────────────────────
 
+C0.3 (Hardware) ──▶ C10.1 ──▶ C10.2 (Context) ──▶ C10.3 (Compaction)
+                          │                               │
+                          └──▶ C10.4 (Model Selection)    ├──▶ C10.5
+                                                          └──▶ C10.6
+
 C3a.1 (Speaker Sidecar) ──▶ C3a.2 (Enrollment) ──▶ C3a.3 (Pipe Integration)
                                                           └──▶ C3a.4 (Age Est.)
 
-C5.1 (Embedding) ──▶ C5.2 (ChromaDB) ──▶ C5.3 (HOT) ──▶ C5.4 (COLD) ──▶ C5.5 (Integration)
+C5.1 (Embedding) ──▶ C5.2 (ChromaDB) ──▶ C5.3 (HOT) ──▶ C5.4 (COLD) ──▶ C5.5
 
-C5.5 + C3a.3 ──▶ C6.1 (Profiles) ──▶ C6.2 (Onboarding) ──▶ C6.3 (Age Adapt.)
-                                                                    │
-                                                            C6.4 (Parental)
-
-C6.4 ──▶ C4.1 (Emotion) ──▶ C4.2 (Nightly) ──▶ C4.3 (Personalization) ──▶ C4.4 (Proactive)
+C5.5 + C3a.3 ──▶ C6.1 (Profiles) ──▶ C6.2 ──▶ C6.3 ──▶ C6.4 (Parental)
+                                                                │
+                   C4.1 (Emotion) ◀────────────────────────────┘
+                        └──▶ C4.2 ──▶ C4.3 ──▶ C4.4
 
 C7.1 (Avatar Server) ──▶ C7.2 → C7.3 → C7.4 → C7.5/C7.6/C7.7/C7.8 → C7.9
 
@@ -588,21 +641,19 @@ C9.1 (Backup CLI) ──▶ C9.2 (Nightly) ──▶ C9.3 (Voice Backup)
 PART 2 (Integration Layer):
 
 I1.1 (Discovery) ──▶ I1.2 (Config Wizard) ──▶ I1.3 (Plugin Activation)
-                                                       │
-       ┌───────────────────────────────────────────────┤
-       │               │               │               │
-       ▼               ▼               ▼               ▼
-I2.1 (HA Bootstrap) I5.1 (Knowledge)  I6.1 (Lists)   I7.1 (NAS Backup)
-       │               │
-       ▼               ▼
-I2.2 (HA Commands)  I5.2 (Connectors) ──▶ I5.3 (Doc Pipeline)
-       │                                          │
-       ▼                                          ▼
-I2.3 (HA WebSocket)                        I5.4 (Privacy) ──▶ I5.5 (Sync)
-       │
-       ├──▶ I3.1 (Voice Pipeline) ──▶ I3.2 (Spatial) ──▶ I3.3 (Multi-Room)
-       │
-       └──▶ I4.1 (Nightly Evolution) ──▶ I4.2 (Fallthrough) ──▶ I4.3 (Lifecycle)
+       │                                              │
+       │  (or via conversation with Atlas)             │
+       │                                     ┌────────┤────────┬────────┐
+       │                                     ▼        ▼        ▼        ▼
+       │                              I2.1 (HA)   I5.1 (Know) I6.1    I7.1
+       │                                │             │
+       │                                ▼             ▼
+       │                          I2.2 → I2.3    I5.2 → I5.3 → I5.4 → I5.5
+       │                                │
+       │                     ┌──────────┤
+       │                     ▼          ▼
+       │               I3.1 → I3.2   I4.1 → I4.2 → I4.3
+       │                  └──▶ I3.3
 ```
 
 ## What Can Start Now (No Dependencies)
@@ -611,15 +662,16 @@ I2.3 (HA WebSocket)                        I5.4 (Privacy) ──▶ I5.5 (Sync)
 
 | Task | Description |
 |------|-------------|
-| C1.1 | Core pipe function with plugin registry (no HA needed) |
+| C0.1 | LLM provider interface (abstract class + Ollama + OpenAI-compat) |
+| C0.2 | Embedding provider interface |
+| C0.3 | Hardware detection (shared with C10.1) |
 | C1.2 | Create database schema and logging infrastructure |
 | C3a.1 | Build speaker ID sidecar container |
-| C5.1 | Pull embedding model into Ollama, verify API |
+| C5.1 | Pull embedding model, verify API |
 | C7.1 | Avatar server container skeleton |
 | C9.1 | Build backup/restore CLI tool |
-| C10.1 | Hardware auto-detection and limit computation |
 
-### Part 2 — Start after C1.1 is operational:
+### Part 2 — Start after C0.6 + C1.1 are operational:
 
 | Task | Description |
 |------|-------------|
@@ -628,17 +680,17 @@ I2.3 (HA WebSocket)                        I5.4 (Privacy) ──▶ I5.5 (Sync)
 ## Blockers
 
 ### Part 1:
-- **C1.1** no longer blocked — HA dependency moved to Part 2
+- **C1.1** requires C0 (installer/provider interface) to know which LLM to talk to
 - **C3a.2+** requires speaker-id sidecar deployed
 - **C4.x** requires profiles + memory + voice identity
-- **C5.2+** requires embedding model (C5.1) operational
+- **C5.2+** requires embedding model operational
 - **C6.x** requires both memory (C5) and speaker-id (C3a)
 
 ### Part 2:
 - **I2.x** requires Home Assistant discovered + access token provided
 - **I3.x** requires HA voice pipeline + speaker-id sidecar
 - **I5.x** requires at least one knowledge source discovered
-- **All of Part 2** requires C1.1 (core pipe) to be operational first
+- **All of Part 2** requires core pipe + plugin registry operational
 
 ---
 
