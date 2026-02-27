@@ -73,6 +73,7 @@ atlas-cortex/
 │   ├── data-model.md          # Database schema (v2, normalized)
 │   ├── backup-restore.md      # Automated backups, one-command restore
 │   ├── context-management.md  # Context windows, compaction, hardware auto-detect
+│   ├── installation.md        # Installer, backend abstraction, voice routing
 │   ├── memory-system.md       # HOT/COLD memory with vector search
 │   ├── user-profiles.md       # Age-awareness, onboarding, profile evolution
 │   ├── personality.md         # Honesty system, pushback, tutoring mode
@@ -81,21 +82,23 @@ atlas-cortex/
 │   ├── lists.md               # Multi-backend lists, permissions, resolution
 │   ├── avatar-system.md       # Lip-sync avatars, visemes, multi-skin
 │   ├── phases.md              # Implementation phases and dependencies
-│   └── infrastructure.md      # Current server/container topology
-├── src/
-│   ├── pipe/                  # Open WebUI Pipe function (core)
+│   └── infrastructure.md      # Reference server topology (Derek's setup)
+├── cortex/                    # Python package (future)
+│   ├── server.py              # Standalone OpenAI-compatible server (:5100)
+│   ├── pipe.py                # Open WebUI Pipe function (optional)
+│   ├── providers/             # LLM backend providers (Ollama, OpenAI-compat)
+│   ├── pipeline/              # Processing layers (0-3)
+│   ├── plugins/               # Integration plugins (Part 2)
 │   ├── memory/                # HOT/COLD memory engine
-│   ├── evolution/             # Nightly cron job scripts
-│   └── speaker-id/            # Speaker identification sidecar
-├── config/
-│   └── docker-compose.yml     # Container deployment (evolution + speaker-id)
+│   ├── profiles/              # User profiles, age, parental
+│   ├── context/               # Context compaction, checkpoints
+│   ├── filler/                # Sentiment + confidence fillers
+│   ├── grounding/             # Confidence scoring, grounding loop
+│   ├── backup/                # Backup/restore CLI
+│   └── install/               # Installer + discovery
 ├── seeds/
-│   └── command_patterns.sql   # Initial HA command patterns
+│   └── command_patterns.sql   # Initial HA command patterns (for I2)
 └── tests/
-    ├── test_sentiment.py
-    ├── test_patterns.py
-    ├── test_memory.py
-    └── test_instant.py
 ```
 
 ## Implementation Phases
@@ -104,7 +107,8 @@ atlas-cortex/
 
 | Phase | Name | Status | Description |
 |-------|------|--------|-------------|
-| C1 | Core Pipe & Logging | 🔲 Planned | Sentiment, instant answers, plugin registry, filler streaming, logging |
+| C0 | Installer & Backend | 🔲 Planned | LLM provider abstraction, hardware detection, CLI installer |
+| C1 | Core Pipe & Logging | 🔲 Planned | Sentiment, instant answers, plugin registry, filler streaming |
 | C3a | Voice Identity | 🔲 Planned | Speaker recognition, enrollment, age estimation |
 | C4 | Emotional Evolution | 🔲 Planned | Rapport tracking, personality drift, proactive suggestions |
 | C5 | Memory System | 🔲 Planned | HOT/COLD paths, vector search, BM25, RRF fusion, ChromaDB |

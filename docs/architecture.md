@@ -360,17 +360,17 @@ Selection is rule-based (no LLM needed for routing):
 
 | Component | Technology | Resource |
 |-----------|-----------|----------|
-| Core Pipe | Open WebUI Pipe function (Python) | Runs inside Open WebUI container |
+| Core Pipe | Atlas Cortex server (Python) + optional Open WebUI Pipe | Standalone :5100 or embedded |
+| LLM Backend | **Any** — Ollama, vLLM, LocalAI, LM Studio, llama.cpp, etc. | Via provider interface |
 | Sentiment | VADER (vaderSentiment) | CPU, <1ms |
 | Speaker ID | resemblyzer | CPU, ~50ms, ~200MB RAM |
 | Memory (vector) | ChromaDB (embedded mode) | CPU, ~50MB RAM, persistent SQLite |
 | Memory (BM25) | SQLite FTS5 | CPU, sub-ms, built into Python |
-| Embeddings | Ollama `nomic-embed-text` | CPU, ~5ms/embed, 274MB |
+| Embeddings | Ollama / sentence-transformers / fastembed | CPU, ~5ms/embed |
 | Reranker | cross-encoder/ms-marco-MiniLM (optional) | CPU, ~20ms |
-| Fast LLM | Qwen2.5 14B (abliterated) | RX 7900 XT, 55 tok/s |
-| Thinking LLM | Qwen3 30B-A3B (MoE) | RX 7900 XT, 75 tok/s |
-| Smart Home | Home Assistant REST API | Proxmox VM |
-| Search | SearXNG | Self-hosted |
-| STT | faster-whisper | Port 10300 |
-| TTS | piper | Port 10200 |
+| Smart Home | Home Assistant REST API (plugin, optional) | Discovered at install |
+| Search | SearXNG (optional) | Self-hosted |
+| STT | faster-whisper, Whisper.cpp, or any Wyoming-compatible | Discovered |
+| TTS | Piper, Coqui, or any Wyoming-compatible | Discovered |
 | Nightly Job | Python + cron container | CPU only |
+| Voice Routing | HA → Atlas Cortex (:5100) → LLM (not HA → LLM directly) | OpenAI-compatible agent |
