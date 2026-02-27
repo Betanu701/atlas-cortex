@@ -830,4 +830,5 @@ memory_metrics (standalone)
 | Backup | 1 | backup_log |
 | Context & Hardware | 4 | hardware_profile, model_config, context_checkpoints, context_metrics |
 | Discovery & Plugins | 3 | discovered_services, service_config, plugin_registry |
-| **Total** | **~37 tables** | (including FTS5 virtual tables and junction tables) |
+| Voice | 1 | tts_voices |
+| **Total** | **~38 tables** | (including FTS5 virtual tables and junction tables) |
