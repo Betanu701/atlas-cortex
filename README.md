@@ -17,6 +17,7 @@ A self-evolving AI assistant system built on top of [Open WebUI](https://github.
 - **Animated avatar** — lip-synced face on satellite displays using phoneme-to-viseme mapping, emotion-driven expressions
 - **Honest personality** — pushes back on bad ideas, challenges users in tutoring mode, never sycophantic
 - **Anti-hallucination** — internal confidence scoring, grounding loops, mistake tracking and learning
+- **Personal knowledge access** — indexes files, email, messages, calendar with strict user-scoped privacy
 
 ## Architecture
 
@@ -74,6 +75,7 @@ atlas-cortex/
 │   ├── user-profiles.md       # Age-awareness, onboarding, profile evolution
 │   ├── personality.md         # Honesty system, pushback, tutoring mode
 │   ├── grounding.md           # Anti-hallucination, confidence scoring, mistake learning
+│   ├── knowledge-access.md    # File/email/message indexing, user-scoped privacy
 │   ├── avatar-system.md       # Lip-sync avatars, visemes, multi-skin
 │   ├── phases.md              # Implementation phases and dependencies
 │   └── infrastructure.md      # Current server/container topology
@@ -104,6 +106,7 @@ atlas-cortex/
 | C5 | Memory System | 🔲 Planned | HOT/COLD paths, vector search, BM25, RRF fusion, ChromaDB |
 | C6 | User Profiles | 🔲 Planned | Age-awareness, onboarding, parental controls, profile evolution |
 | C7 | Avatar System | 🔲 Future | Phoneme-to-viseme lip-sync, emotion expressions, multi-skin |
+| C8 | Knowledge Access | 🔲 Future | File/email/message indexing, user-scoped privacy, source connectors |
 
 See [docs/phases.md](docs/phases.md) for detailed task breakdown and dependency graph.
 

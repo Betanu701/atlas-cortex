@@ -284,14 +284,44 @@ Fillers are selected based on **two dimensions**: sentiment (emotional tone) and
 
 #### Sentiment Fillers
 
-| Sentiment | Fillers |
-|-----------|---------|
-| Greeting | "Hey!", "Good morning!", "What's up?" |
-| Question | "Good question — ", "Let me think... ", "Hmm, " |
-| Frustrated | "I hear you. Let me help — ", "Yeah, that's annoying. " |
+**Filler selection is randomized with recency tracking** — Atlas never repeats the same filler twice in a row, and weights toward less-recently-used phrases. The pool grows over time as the nightly evolution job generates new phrases matched to each user's style.
+
+| Sentiment | Pool (rotated, never repeated consecutively) |
+|-----------|------|
+| Greeting | "Hey!", "Morning!", "What's up?", "Yo!", "Hey there." |
+| Question | "Hmm — ", "Let me think... ", "So — ", "Alright — ", "Okay, " |
+| Frustrated | "I hear you. ", "Yeah, that's annoying. ", "Ugh, let me look at this. " |
 | Command | *(no filler — execute directly)* |
-| Excited | "That's awesome! ", "Hell yeah! " |
-| Late night | "Still at it? ", "Alright, " |
+| Excited | "Nice! ", "Oh cool — ", "Hell yeah! " |
+| Late night | "Still at it? ", "Alright, ", "Late one, huh? " |
+| Follow-up | "So — ", "Right, ", "Okay — ", *(often no filler needed)* |
+| Casual | *(no filler — just start answering)* |
+
+```python
+# Filler selection — never stale, never repetitive
+def select_filler(sentiment, confidence, user_id):
+    pool = get_filler_pool(sentiment, user_id)  # personalized pool
+    
+    # Remove last 2 used fillers to prevent repetition
+    recent = get_recent_fillers(user_id, count=2)
+    candidates = [f for f in pool if f not in recent]
+    
+    # Weighted random: less-recently-used phrases get higher weight
+    filler = weighted_random(candidates, recency_weights)
+    
+    # Some interactions don't need fillers at all
+    if sentiment in ('command', 'casual') or is_follow_up_in_conversation:
+        filler = ""
+    
+    # Append confidence framing if needed
+    if confidence < 0.8 and filler:
+        filler += select_confidence_filler(confidence)
+    
+    log_filler_used(user_id, filler)
+    return filler
+```
+
+**Important**: Many interactions need NO filler at all. If the user is in the middle of a conversation and asks a follow-up, jumping in with "Good question — " every time is robotic. The system tracks conversation flow and often just starts answering directly.
 
 #### Confidence Fillers (appended when confidence < 0.8)
 
