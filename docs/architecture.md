@@ -43,6 +43,9 @@ Atlas Cortex is an Open WebUI **Pipe function** that intercepts all user message
 │    • When first real token arrives, seamlessly transition       │
 │    • Inject filler context into system prompt so LLM continues  │
 │      naturally from the filler text                             │
+│    • Confidence assessment on response (see grounding.md)       │
+│    • If confidence < 0.5 → grounding loop (search/verify)      │
+│    • Mistake history injected into prompt for known-weak topics │
 │                                                                  │
 │  Always Running: Interaction Logger                             │
 │    • Log every interaction: user, message, layer hit,           │

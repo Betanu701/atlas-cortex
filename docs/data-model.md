@@ -280,10 +280,36 @@ CREATE TABLE evolution_log (
     patterns_learned INTEGER DEFAULT 0,
     patterns_pruned INTEGER DEFAULT 0,
     profiles_evolved INTEGER DEFAULT 0,
+    mistakes_reviewed INTEGER DEFAULT 0,
     intercept_rate REAL,                -- % of HA commands handled without LLM
     total_interactions_today INTEGER,
     notes TEXT                          -- LLM-generated summary of the run
 );
+```
+
+### mistake_log
+
+Tracks every instance where Atlas was wrong, for learning and confidence calibration.
+
+```sql
+CREATE TABLE mistake_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    interaction_id INTEGER,
+    user_id TEXT,
+    claim_text TEXT NOT NULL,           -- what Atlas said that was wrong
+    correction_text TEXT,               -- what the right answer is
+    detection_method TEXT NOT NULL,     -- 'user_correction' | 'grounding' | 'self_correction' | 'follow_up'
+    mistake_category TEXT,             -- 'version_number' | 'factual' | 'config' | 'attribution' | 'logic' | 'outdated'
+    confidence_at_time REAL,           -- how confident Atlas was when it said it
+    topic_tags TEXT DEFAULT '[]',
+    root_cause TEXT,                   -- 'training_data_outdated' | 'hallucination' | 'misunderstood_question' | 'missing_context'
+    resolved BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (interaction_id) REFERENCES interactions(id)
+);
+
+CREATE INDEX idx_mistakes_category ON mistake_log(mistake_category);
+CREATE INDEX idx_mistakes_unresolved ON mistake_log(resolved) WHERE resolved = FALSE;
 ```
 
 ## Entity-Relationship Diagram
