@@ -11,6 +11,15 @@ import time
 from typing import Any, AsyncGenerator
 
 from cortex.providers.base import LLMProvider
+from cortex.safety import (
+    ConversationDriftMonitor,
+    InputGuardrails,
+    OutputGuardrails,
+    Severity,
+    build_safety_system_prompt,
+    log_guardrail_event,
+    resolve_content_tier,
+)
 
 from .layer0_context import assemble_context
 from .layer1_instant import try_instant_answer
@@ -33,15 +42,14 @@ async def run_pipeline(
     system_prompt: str = "",
     memory_context: str = "",
     db_conn: Any = None,
+    user_profile: dict[str, Any] | None = None,
+    drift_monitor: ConversationDriftMonitor | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run the full Atlas Cortex pipeline for a single message.
 
     Yields text tokens as soon as they are available.
 
-    Layer 0 → context assembly
-    Layer 1 → instant answers (date, math, greetings, identity)
-    Layer 2 → plugin dispatch (smart home, lists, knowledge)
-    Layer 3 → filler streaming + LLM background call
+    Input guardrails → Layer 0 → Layer 1 → Layer 2 → Layer 3 → Output guardrails
     """
     return _pipeline_generator(
         message=message,
@@ -56,6 +64,8 @@ async def run_pipeline(
         system_prompt=system_prompt,
         memory_context=memory_context,
         db_conn=db_conn,
+        user_profile=user_profile,
+        drift_monitor=drift_monitor,
     )
 
 
@@ -72,8 +82,55 @@ async def _pipeline_generator(
     system_prompt: str,
     memory_context: str,
     db_conn: Any,
+    user_profile: dict[str, Any] | None = None,
+    drift_monitor: ConversationDriftMonitor | None = None,
 ) -> AsyncGenerator[str, None]:
     start_ms = int(time.monotonic() * 1000)
+
+    profile = user_profile or {}
+    content_tier = resolve_content_tier(profile)
+    input_guards = InputGuardrails(db_conn)
+    output_guards = OutputGuardrails()
+
+    # ── Input Guardrails ──────────────────────────────────────
+    input_result = input_guards.check(message, profile, content_tier)
+    if drift_monitor is not None:
+        drift_monitor.update(int(input_result.severity))
+
+    if input_result.severity >= Severity.SOFT_BLOCK:
+        safe_response = input_result.suggested_response or (
+            "I'm not able to help with that request."
+        )
+        log_guardrail_event(
+            db_conn,
+            user_id=user_id,
+            direction="input",
+            result=input_result,
+            action_taken="blocked",
+            content_tier=content_tier,
+            trigger_text=message,
+        )
+        yield safe_response
+        return
+
+    if input_result.severity == Severity.WARN:
+        log_guardrail_event(
+            db_conn,
+            user_id=user_id,
+            direction="input",
+            result=input_result,
+            action_taken="warned",
+            content_tier=content_tier,
+            trigger_text=message,
+        )
+
+    # ── Build safety system prompt ────────────────────────────
+    drift_context = drift_monitor.get_safety_context() if drift_monitor else ""
+    safety_prompt = build_safety_system_prompt(content_tier, drift_context)
+    # Prepend safety prompt; callers may supply additional prompt text
+    effective_system_prompt = (
+        safety_prompt + ("\n\n" + system_prompt if system_prompt else "")
+    )
 
     # ── Layer 0: Context Assembly ─────────────────────────────
     context = await assemble_context(
@@ -88,6 +145,18 @@ async def _pipeline_generator(
     # ── Layer 1: Instant Answers ─────────────────────────────
     instant_response, instant_confidence = await try_instant_answer(message, context)
     if instant_response is not None:
+        # Instant answers are safe by construction but still pass output guards
+        out_result = output_guards.check(
+            instant_response, profile, content_tier,
+            effective_system_prompt, message
+        )
+        if out_result.severity >= Severity.SOFT_BLOCK:
+            instant_response = out_result.suggested_response or instant_response
+            log_guardrail_event(
+                db_conn, user_id=user_id, direction="output",
+                result=out_result, action_taken="replaced",
+                content_tier=content_tier, trigger_text=instant_response,
+            )
         yield instant_response
         _log_interaction(
             db_conn, context, message, instant_response,
@@ -100,6 +169,17 @@ async def _pipeline_generator(
     # ── Layer 2: Plugin Dispatch ──────────────────────────────
     plugin_response, plugin_confidence, entities = await try_plugin_dispatch(message, context)
     if plugin_response is not None:
+        out_result = output_guards.check(
+            plugin_response, profile, content_tier,
+            effective_system_prompt, message
+        )
+        if out_result.severity >= Severity.SOFT_BLOCK:
+            plugin_response = out_result.suggested_response or plugin_response
+            log_guardrail_event(
+                db_conn, user_id=user_id, direction="output",
+                result=out_result, action_taken="replaced",
+                content_tier=content_tier, trigger_text=plugin_response,
+            )
         yield plugin_response
         _log_interaction(
             db_conn, context, message, plugin_response,
@@ -119,12 +199,40 @@ async def _pipeline_generator(
         model_fast=model_fast,
         model_thinking=model_thinking,
         memory_context=memory_context,
-        system_prompt=system_prompt,
+        system_prompt=effective_system_prompt,
     ):
         full_response_parts.append(chunk)
         yield chunk
 
     full_response = "".join(full_response_parts)
+
+    # ── Output Guardrails ─────────────────────────────────────
+    out_result = output_guards.check(
+        full_response, profile, content_tier,
+        effective_system_prompt, message,
+    )
+    if out_result.severity >= Severity.SOFT_BLOCK:
+        safe_response = out_result.suggested_response or (
+            "I'm not able to provide that response."
+        )
+        log_guardrail_event(
+            db_conn, user_id=user_id, direction="output",
+            result=out_result, action_taken="replaced",
+            content_tier=content_tier, trigger_text=full_response,
+        )
+        # We already streamed; append a correction note
+        yield "\n\n" + safe_response
+        full_response = safe_response
+    elif out_result.severity == Severity.WARN:
+        log_guardrail_event(
+            db_conn, user_id=user_id, direction="output",
+            result=out_result, action_taken="warned",
+            content_tier=content_tier, trigger_text=full_response,
+        )
+
+    if drift_monitor is not None:
+        drift_monitor.update(int(out_result.severity))
+
     _log_interaction(
         db_conn, context, message, full_response,
         matched_layer="llm",

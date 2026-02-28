@@ -545,6 +545,50 @@ CREATE TABLE IF NOT EXISTS plugin_registry (
     health_status    TEXT DEFAULT 'unknown',
     activated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ───────── Safety Guardrails ─────────
+
+CREATE TABLE IF NOT EXISTS guardrail_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    user_id      TEXT,
+    direction    TEXT NOT NULL,       -- 'input' | 'output'
+    category     TEXT NOT NULL,       -- 'self_harm' | 'explicit' | 'injection' | 'pii' | ...
+    severity     TEXT NOT NULL,       -- 'pass' | 'warn' | 'soft_block' | 'hard_block'
+    trigger_text TEXT,               -- redacted if PII
+    action_taken TEXT,               -- 'passed' | 'warned' | 'replaced' | 'blocked'
+    content_tier TEXT,
+    FOREIGN KEY (user_id) REFERENCES user_profiles(user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guardrail_severity ON guardrail_events(severity);
+CREATE INDEX IF NOT EXISTS idx_guardrail_category ON guardrail_events(category);
+CREATE INDEX IF NOT EXISTS idx_guardrail_user     ON guardrail_events(user_id);
+
+CREATE TABLE IF NOT EXISTS jailbreak_patterns (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern              TEXT NOT NULL,
+    source_event_id      INTEGER,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_matched_at      TIMESTAMP,
+    match_count          INTEGER DEFAULT 0,
+    false_positive_count INTEGER DEFAULT 0,
+    active               BOOLEAN DEFAULT TRUE,
+    reviewed             BOOLEAN DEFAULT FALSE,
+    notes                TEXT,
+    FOREIGN KEY (source_event_id) REFERENCES guardrail_events(id)
+);
+CREATE INDEX IF NOT EXISTS idx_jb_active ON jailbreak_patterns(active);
+
+CREATE TABLE IF NOT EXISTS jailbreak_exemplars (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text            TEXT NOT NULL,
+    embedding       BLOB,
+    source_event_id INTEGER,
+    cluster_id      TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_event_id) REFERENCES guardrail_events(id)
+);
+CREATE INDEX IF NOT EXISTS idx_jb_cluster ON jailbreak_exemplars(cluster_id);
 """
 
 
