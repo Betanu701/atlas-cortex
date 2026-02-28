@@ -27,6 +27,8 @@ from .jailbreak import (
 
 logger = logging.getLogger(__name__)
 
+_MAX_TRIGGER_TEXT_LENGTH = 500
+
 __all__ = [
     "Severity",
     "GuardrailResult",
@@ -439,7 +441,7 @@ def log_guardrail_event(
         return None
     try:
         # Redact trigger text if PII was involved
-        safe_trigger = "[REDACTED]" if result.redact_input else trigger_text[:500]
+        safe_trigger = "[REDACTED]" if result.redact_input else trigger_text[:_MAX_TRIGGER_TEXT_LENGTH]
         cur = db_conn.execute(
             """
             INSERT INTO guardrail_events

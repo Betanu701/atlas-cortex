@@ -190,7 +190,7 @@ async def _pipeline_generator(
         )
         return
 
-    # ── Layer 3: Filler + LLM ────────────────────────────────
+    # ── Layer 3: Filler + LLM (buffer before output guardrail check) ──
     full_response_parts: list[str] = []
     async for chunk in stream_llm_response(
         message=message,
@@ -202,7 +202,6 @@ async def _pipeline_generator(
         system_prompt=effective_system_prompt,
     ):
         full_response_parts.append(chunk)
-        yield chunk
 
     full_response = "".join(full_response_parts)
 
@@ -220,15 +219,16 @@ async def _pipeline_generator(
             result=out_result, action_taken="replaced",
             content_tier=content_tier, trigger_text=full_response,
         )
-        # We already streamed; append a correction note
-        yield "\n\n" + safe_response
+        yield safe_response
         full_response = safe_response
-    elif out_result.severity == Severity.WARN:
-        log_guardrail_event(
-            db_conn, user_id=user_id, direction="output",
-            result=out_result, action_taken="warned",
-            content_tier=content_tier, trigger_text=full_response,
-        )
+    else:
+        yield full_response
+        if out_result.severity == Severity.WARN:
+            log_guardrail_event(
+                db_conn, user_id=user_id, direction="output",
+                result=out_result, action_taken="warned",
+                content_tier=content_tier, trigger_text=full_response,
+            )
 
     if drift_monitor is not None:
         drift_monitor.update(int(out_result.severity))

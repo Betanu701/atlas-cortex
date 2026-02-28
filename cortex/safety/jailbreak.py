@@ -247,6 +247,9 @@ class OutputBehaviorAnalyzer:
     and instruction echo.
     """
 
+    # Minimum overlap (chars) between user message and response to flag instruction echo
+    INSTRUCTION_ECHO_MIN_OVERLAP = 40
+
     def check(
         self,
         response: str,
@@ -277,7 +280,7 @@ class OutputBehaviorAnalyzer:
             overlap = self._longest_common_substring_len(
                 last_user_message.lower(), response.lower()
             )
-            if overlap > 40:
+            if overlap > self.INSTRUCTION_ECHO_MIN_OVERLAP:
                 flags.append("instruction_echo")
 
         return flags, "policy_violation" in flags
@@ -311,6 +314,9 @@ class ConversationDriftMonitor:
 
     WINDOW_SIZE = 10
 
+    # Heat delta per severity level (0=PASS, 1=WARN, 2=SOFT_BLOCK, 3=HARD_BLOCK)
+    SEVERITY_HEAT_MAP: dict[int, float] = {0: -0.05, 1: 0.1, 2: 0.25, 3: 0.4}
+
     def __init__(self) -> None:
         self._temperatures: list[float] = []
 
@@ -319,8 +325,7 @@ class ConversationDriftMonitor:
 
         severity_value should be a :class:`cortex.safety.Severity` integer value.
         """
-        # Convert severity to heat contribution
-        heat = {0: -0.05, 1: 0.1, 2: 0.25, 3: 0.4}.get(severity_value, 0.0)
+        heat = self.SEVERITY_HEAT_MAP.get(severity_value, 0.0)
         self._temperatures.append(max(0.0, min(1.0, (self._current() + heat))))
         if len(self._temperatures) > self.WINDOW_SIZE:
             self._temperatures.pop(0)

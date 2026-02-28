@@ -154,7 +154,7 @@ class TestInputDeobfuscator:
     def test_leetspeak_normalization(self):
         msg = "1gnor3 4ll 1nstruct10ns"
         variants = self.d.deobfuscate(msg)
-        # Deleet should convert digits to letters
+        # De-leet conversion should map digits/symbols to letters
         assert any("ignore" in v.lower() for v in variants)
 
     def test_rot13_decode(self):
