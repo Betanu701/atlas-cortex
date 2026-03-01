@@ -32,6 +32,15 @@ const provisionSteps = ref([])
 
 const satId = computed(() => route.params.id)
 
+// Debounced live push for sliders
+let _volumeTimer = null
+function onVolumeInput() {
+  clearTimeout(_volumeTimer)
+  _volumeTimer = setTimeout(() => {
+    api.post(`/admin/satellites/${satId.value}/command`, { action: 'volume', params: { level: form.value.volume } }).catch(() => {})
+  }, 150)
+}
+
 const hardwareInfo = computed(() => {
   if (!satellite.value?.hardware_info) return null
   try { return JSON.parse(satellite.value.hardware_info) } catch { return null }
@@ -213,7 +222,7 @@ async function removeSatellite() {
         </div>
         <div class="form-row">
           <label>Volume ({{ Math.round(form.volume * 100) }}%)</label>
-          <input type="range" v-model.number="form.volume" min="0" max="1" step="0.05" />
+          <input type="range" v-model.number="form.volume" min="0" max="1" step="0.05" @input="onVolumeInput" />
         </div>
         <div class="form-row">
           <label>Mic Gain ({{ Math.round(form.mic_gain * 100) }}%)</label>

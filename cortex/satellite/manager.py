@@ -210,7 +210,7 @@ class SatelliteManager:
 
     async def identify(self, satellite_id: str) -> bool:
         """Blink LEDs on a satellite for physical identification."""
-        return await send_command(satellite_id, "led", {"pattern": "identify", "duration": 10})
+        return await send_command(satellite_id, "identify")
 
     async def test_audio(self, satellite_id: str) -> bool:
         """Trigger an audio test on the satellite."""
