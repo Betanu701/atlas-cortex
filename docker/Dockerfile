@@ -1,3 +1,12 @@
+# ── Stage 1: Build admin UI ──────────────────────────────────────
+FROM node:20-slim AS admin-build
+WORKDIR /build
+COPY admin/package*.json ./
+RUN npm ci --ignore-scripts
+COPY admin/ ./
+RUN npm run build
+
+# ── Stage 2: Atlas Cortex runtime ────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -14,8 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source
 COPY cortex/ ./cortex/
 
-# Copy pre-built admin UI
-COPY admin/dist/ ./admin/dist/
+# Copy pre-built admin UI from build stage
+COPY --from=admin-build /build/dist/ ./admin/dist/
 
 # Copy satellite agent source (for provisioning to push to satellites)
 COPY satellite/ ./satellite/
