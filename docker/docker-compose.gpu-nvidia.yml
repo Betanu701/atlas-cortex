@@ -15,7 +15,7 @@ services:
               count: 1
               capabilities: [gpu]
 
-  atlas-ollama-voice:
+  atlas-orpheus:
     deploy:
       resources:
         reservations:

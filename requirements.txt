@@ -12,10 +12,7 @@ vaderSentiment>=3.3.2
 # ── Voice / TTS ──────────────────────────────────────────────────
 aiohttp>=3.9.0
 
-# ── Orpheus TTS SNAC Decoder ────────────────────────────────────
-# torch CPU-only for SNAC audio token decoding (Orpheus TTS)
-# Installed via --index-url in Dockerfile for CPU-only build (~150MB)
-snac>=1.0.0
+# ── Safety / Embeddings ──────────────────────────────────────────
 numpy>=1.24.0
 
 # ── Admin Panel Auth ─────────────────────────────────────────────

@@ -21,10 +21,9 @@ services:
       - MODEL_FAST=${MODEL_FAST:-qwen2.5:7b}
       - MODEL_THINKING=${MODEL_THINKING:-qwen3:30b-a3b}
       - MODEL_EMBEDDING=${MODEL_EMBEDDING:-nomic-embed-text}
-      # TTS — Orpheus primary (on voice GPU, port 11435), Piper fallback (port 10200)
+      # TTS — Orpheus primary via FastAPI (port 5005), Piper fallback (port 10200)
       - TTS_PROVIDER=${TTS_PROVIDER:-orpheus}
-      - ORPHEUS_URL=${ORPHEUS_URL:-http://localhost:11435}
-      - ORPHEUS_MODEL=${ORPHEUS_MODEL:-legraphista/Orpheus:3b-ft-q8}
+      - ORPHEUS_FASTAPI_URL=${ORPHEUS_FASTAPI_URL:-http://localhost:5005}
       - PIPER_HOST=${PIPER_HOST:-localhost}
       - PIPER_PORT=${PIPER_PORT:-10200}
       # STT — Faster-Whisper (port 10300)
@@ -119,29 +118,90 @@ services:
       retries: 3
       start_period: 30s
 
-  # ── Ollama Voice — secondary GPU (port 11435) ──────────────────
-  # Dedicated voice GPU: Orpheus TTS (+ STT if GPU-capable).
-  # Runs on the second GPU so TTS is always loaded, zero switch latency.
-  # GPU: Use override files for AMD ROCm, Intel, or NVIDIA.
-  atlas-ollama-voice:
-    image: ${OLLAMA_VOICE_IMAGE:-ollama/ollama:latest}
-    container_name: atlas-ollama-voice
+  # ── Orpheus FastAPI — TTS engine (port 5005) ────────────────────
+  # Orpheus TTS with SNAC decoder. Universal GPU support via device.py
+  # (CUDA/ROCm/Intel XPU/MPS/CPU). Connects to llama.cpp for inference.
+  # Built from Betanu701/Orpheus-FastAPI v1.0.0 with Intel Arc support.
+  atlas-orpheus:
+    build:
+      context: https://github.com/Betanu701/Orpheus-FastAPI.git#v1.0.0
+      dockerfile: Dockerfile.gpu-intel
+    image: atlas-orpheus:latest
+    container_name: atlas-orpheus
     restart: unless-stopped
     ports:
-      - "11435:11434"
-    volumes:
-      - atlas-ollama-voice-data:/root/.ollama
+      - "5005:5005"
     environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-0}
+      - ORPHEUS_API_URL=http://atlas-llama-voice:5006/v1/completions
+      - ORPHEUS_API_TIMEOUT=${ORPHEUS_API_TIMEOUT:-120}
+      - ORPHEUS_MAX_TOKENS=${ORPHEUS_MAX_TOKENS:-8192}
+      - ORPHEUS_TEMPERATURE=${ORPHEUS_TEMPERATURE:-0.6}
+      - ORPHEUS_TOP_P=${ORPHEUS_TOP_P:-0.9}
+      - ORPHEUS_SAMPLE_RATE=24000
+      - ORPHEUS_MODEL_NAME=${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf}
+      - ORPHEUS_HOST=0.0.0.0
+      - ORPHEUS_PORT=5005
     networks:
       - atlas
+    depends_on:
+      atlas-llama-voice:
+        condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:5005/docs || exit 1"]
       interval: 30s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 60s
+
+  # ── llama.cpp Voice — Orpheus inference on Intel GPU (port 5006) ─
+  # Runs the Orpheus GGUF model for token generation. Intel GPU via
+  # llama.cpp server-intel image. SNAC tokens sent to atlas-orpheus
+  # for decoding.
+  atlas-llama-voice:
+    image: ghcr.io/ggml-org/llama.cpp:server-intel
+    container_name: atlas-llama-voice
+    restart: unless-stopped
+    ports:
+      - "5006:5006"
+    volumes:
+      - atlas-orpheus-models:/models
+    networks:
+      - atlas
+    depends_on:
+      atlas-orpheus-init:
+        condition: service_completed_successfully
+    command: >
+      -m /models/${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf}
+      --host 0.0.0.0
+      --port 5006
+      --n-gpu-layers 29
+      --ctx-size ${ORPHEUS_MAX_TOKENS:-8192}
+      --n-predict ${ORPHEUS_MAX_TOKENS:-8192}
+      --rope-scaling linear
+      --no-mmap --no-slots --no-webui
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5006/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ── Model init — downloads Orpheus GGUF on first run ────────────
+  atlas-orpheus-init:
+    image: curlimages/curl:latest
+    volumes:
+      - atlas-orpheus-models:/app/models
+    working_dir: /app
+    command: >
+      sh -c '
+      if [ ! -f /app/models/${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf} ]; then
+        echo "Downloading Orpheus model...";
+        wget -q --show-progress -P /app/models
+        https://huggingface.co/lex-au/${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf}/resolve/main/${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf};
+      else
+        echo "Orpheus model already exists";
+      fi'
+    restart: "no"
 
 networks:
   atlas:
@@ -156,5 +216,5 @@ volumes:
     driver: local
   atlas-ollama-data:
     driver: local
-  atlas-ollama-voice-data:
+  atlas-orpheus-models:
     driver: local
