@@ -184,7 +184,7 @@ class SatelliteAgent:
                 self.wake_word = None
 
         # LED
-        self.led = create_led(cfg.led_type, cfg.led_count)
+        self.led = create_led(cfg.led_type, cfg.led_count, cfg.led_patterns)
 
         # WebSocket
         self.ws = SatelliteWSClient(
@@ -312,13 +312,17 @@ class SatelliteAgent:
     async def _on_tts_start(self, msg: dict) -> None:
         """Server is about to send TTS audio."""
         self._tts_buffer.clear()
-        fmt = msg.get("format", "pcm_22k_16bit_mono")
-        if "22k" in fmt:
-            self._tts_sample_rate = 22050
-        elif "16k" in fmt:
-            self._tts_sample_rate = 16000
-        elif "44k" in fmt:
-            self._tts_sample_rate = 44100
+        # Check explicit sample_rate first, then parse from format string
+        if "sample_rate" in msg:
+            self._tts_sample_rate = int(msg["sample_rate"])
+        else:
+            fmt = msg.get("format", "pcm_22k_16bit_mono")
+            if "22k" in fmt:
+                self._tts_sample_rate = 22050
+            elif "16k" in fmt:
+                self._tts_sample_rate = 16000
+            elif "44k" in fmt:
+                self._tts_sample_rate = 44100
 
     async def _on_tts_chunk(self, msg: dict) -> None:
         """Received a chunk of TTS audio."""
@@ -394,6 +398,13 @@ class SatelliteAgent:
                 self.led.set_pattern(pattern)
                 await asyncio.sleep(1.5)
             self.led.set_pattern("idle")
+        elif action == "led_config":
+            # Update LED pattern colors at runtime
+            patterns = params.get("patterns", {})
+            if patterns and hasattr(self.led, "update_patterns"):
+                self.led.update_patterns(patterns)
+                self.config.led_patterns.update(patterns)
+                logger.info("LED patterns updated: %s", list(patterns.keys()))
         else:
             logger.warning("Unknown command: %s", action)
 
@@ -404,8 +415,11 @@ class SatelliteAgent:
         if "volume" in msg:
             self.config.volume = msg["volume"]
             self.audio_out.volume = msg["volume"]
-        if "led_brightness" in msg:
-            pass  # TODO: apply brightness
+        if "led_patterns" in msg:
+            patterns = msg["led_patterns"]
+            if hasattr(self.led, "update_patterns"):
+                self.led.update_patterns(patterns)
+            self.config.led_patterns.update(patterns)
         if "vad_sensitivity" in msg:
             self.config.vad_sensitivity = msg["vad_sensitivity"]
         if "features" in msg:
