@@ -18,7 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install torch CPU-only first (smaller than CUDA/ROCm variants)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy source
 COPY cortex/ ./cortex/
@@ -37,11 +39,13 @@ ENV CORTEX_HOST=0.0.0.0
 ENV CORTEX_PORT=5100
 
 # Default service discovery (host networking — services publish ports)
-ENV TTS_HOST=localhost
-ENV TTS_PORT=10200
+ENV PIPER_HOST=localhost
+ENV PIPER_PORT=10200
 ENV STT_HOST=localhost
 ENV STT_PORT=10300
 ENV LLM_URL=http://localhost:11434
+ENV ORPHEUS_URL=http://localhost:11435
+ENV TTS_PROVIDER=orpheus
 
 EXPOSE 5100
 

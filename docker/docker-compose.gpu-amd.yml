@@ -1,15 +1,30 @@
-# GPU override for AMD ROCm systems.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu-amd.yml up -d
+# GPU override for AMD ROCm (primary LLM GPU) + Intel (voice GPU).
+# This is the default for Derek's setup:
+#   GPU 0 (AMD RX 7900 XT, 20GB) → LLM
+#   GPU 1 (Intel Arc B580, 12GB)  → Voice (Orpheus TTS)
 #
-# Requirements:
-#   - AMD GPU with ROCm support (RX 6000/7000 series)
-#   - /dev/kfd and /dev/dri available on host
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu-amd.yml up -d
 
 services:
+  # AMD ROCm for main LLM
   atlas-ollama:
     image: ollama/ollama:rocm
     devices:
       - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
+      - /dev/dri/card1:/dev/dri/card1
+      - /dev/dri/renderD129:/dev/dri/renderD129
+    group_add:
+      - video
+
+  # Intel Vulkan for voice (Orpheus TTS)
+  atlas-ollama-voice:
+    image: ollama/ollama:latest
+    devices:
+      - /dev/dri/card0:/dev/dri/card0
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=0
+      - OLLAMA_VULKAN=1
     group_add:
       - video
