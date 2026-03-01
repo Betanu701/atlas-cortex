@@ -198,12 +198,14 @@ services:
     volumes:
       - atlas-orpheus-models:/app/models
     working_dir: /app
+    environment:
+      - ORPHEUS_MODEL_NAME=${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf}
     command: >
       sh -c '
-      MODEL="${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf}";
-      if [ ! -f "/app/models/$MODEL" ]; then
-        echo "Downloading Orpheus model ($MODEL)...";
-        curl -fL -o "/app/models/$MODEL" "https://huggingface.co/lex-au/Orpheus-3b-FT-Q8_0.gguf/resolve/main/$MODEL";
+      MODEL="$$ORPHEUS_MODEL_NAME";
+      if [ ! -f "/app/models/$$MODEL" ]; then
+        echo "Downloading Orpheus model ($$MODEL)...";
+        curl -fL -o "/app/models/$$MODEL" "https://huggingface.co/lex-au/Orpheus-3b-FT-Q8_0.gguf/resolve/main/$$MODEL";
       else
         echo "Orpheus model already exists";
       fi'
