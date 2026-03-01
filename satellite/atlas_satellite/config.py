@@ -46,7 +46,7 @@ class SatelliteConfig:
 
     # Silence detection
     silence_threshold_frames: int = 30  # ~900ms at 30ms/frame
-    speech_threshold_frames: int = 3  # ~90ms to confirm speech
+    speech_threshold_frames: int = 10  # ~300ms to confirm speech
 
     # LED patterns: state → {"r": int, "g": int, "b": int, "brightness": float}
     led_patterns: dict = field(default_factory=lambda: {

@@ -157,14 +157,15 @@ class WyomingClient:
     ) -> None:
         """Send a Wyoming event (JSON line + optional binary payload)."""
         msg: dict[str, Any] = {"type": event_type}
+        data_bytes = b""
         if data:
-            msg["data"] = data
-            msg["data_length"] = len(json.dumps(data).encode("utf-8"))
+            data_bytes = json.dumps(data).encode("utf-8")
+            msg["data_length"] = len(data_bytes)
         if payload:
             msg["payload_length"] = len(payload)
         writer.write(json.dumps(msg).encode("utf-8") + b"\n")
-        if data:
-            writer.write(json.dumps(data).encode("utf-8"))
+        if data_bytes:
+            writer.write(data_bytes)
         if payload:
             writer.write(payload)
         await writer.drain()

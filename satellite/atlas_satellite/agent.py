@@ -72,6 +72,7 @@ class SatelliteAgent:
         self._tts_buffer = bytearray()
         self._tts_sample_rate = 22050
         self._server_url_discovered = asyncio.Event()
+        self._echo_suppress_until = 0.0  # timestamp: ignore VAD until this time
 
     async def start(self) -> None:
         """Initialize components and run the main loop."""
@@ -241,6 +242,7 @@ class SatelliteAgent:
         self.ws.on("COMMAND", self._on_command)
         self.ws.on("CONFIG", self._on_config)
         self.ws.on("SYNC_FILLERS", self._on_sync_fillers)
+        self.ws.on("PIPELINE_ERROR", self._on_pipeline_error)
 
     # ── Audio loop ────────────────────────────────────────────────
 
@@ -248,10 +250,26 @@ class SatelliteAgent:
         """Main audio processing loop — runs every chunk_ms."""
         loop = asyncio.get_event_loop()
 
+        # Discard initial audio frames to avoid startup noise triggering VAD
+        self._echo_suppress_until = time.monotonic() + 2.0
+
         while self._running:
             if self.state in (State.ERROR, State.MUTED):
                 await asyncio.sleep(0.1)
                 continue
+
+            # Timeout: if stuck in PROCESSING for >60s, return to IDLE
+            if self.state == State.PROCESSING:
+                if not hasattr(self, '_processing_start'):
+                    self._processing_start = time.monotonic()
+                elif time.monotonic() - self._processing_start > 60:
+                    logger.warning("Processing timeout — returning to IDLE")
+                    self.state = State.IDLE
+                    self.led.set_pattern("idle")
+                    self.vad.reset()
+                    del self._processing_start
+            elif hasattr(self, '_processing_start'):
+                del self._processing_start
 
             # Read audio from mic (blocking call in executor)
             audio = await loop.run_in_executor(None, self.audio_in.read)
@@ -267,6 +285,9 @@ class SatelliteAgent:
 
     async def _process_idle(self, audio: bytes) -> None:
         """In IDLE state: check for wake word or VAD speech start."""
+        if time.monotonic() < self._echo_suppress_until:
+            return  # Suppress echo after TTS playback
+
         if self.wake_word:
             # Wake word mode
             confidence = self.wake_word.process(audio)
@@ -311,6 +332,7 @@ class SatelliteAgent:
 
     async def _on_tts_start(self, msg: dict) -> None:
         """Server is about to send TTS audio."""
+        logger.info("TTS_START received (rate=%s)", msg.get("sample_rate", "?"))
         self._tts_buffer.clear()
         # Check explicit sample_rate first, then parse from format string
         if "sample_rate" in msg:
@@ -332,6 +354,7 @@ class SatelliteAgent:
 
     async def _on_tts_end(self, msg: dict) -> None:
         """TTS stream complete — play the buffered audio."""
+        logger.info("TTS_END received (%d bytes buffered, rate=%d)", len(self._tts_buffer), self._tts_sample_rate)
         self.state = State.SPEAKING
         self.led.set_pattern("speaking")
 
@@ -340,6 +363,9 @@ class SatelliteAgent:
                 bytes(self._tts_buffer), self._tts_sample_rate
             )
             self._tts_buffer.clear()
+
+        # Suppress echo: ignore VAD for 1.5s after playback ends
+        self._echo_suppress_until = time.monotonic() + 1.5
 
         # Return to idle
         self.state = State.IDLE
@@ -356,6 +382,14 @@ class SatelliteAgent:
         if filler_path:
             logger.debug("Playing filler: %s", filler_path)
             await self.audio_out.play_wav(filler_path)
+
+    async def _on_pipeline_error(self, msg: dict) -> None:
+        """Server pipeline failed — return to idle."""
+        detail = msg.get("detail", "unknown")
+        logger.warning("Pipeline error from server: %s", detail)
+        self.state = State.IDLE
+        self.led.set_pattern("idle")
+        self.vad.reset()
 
     async def _on_command(self, msg: dict) -> None:
         """Execute a command from the server."""

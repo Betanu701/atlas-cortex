@@ -286,11 +286,19 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
             transcript = await stt.transcribe(audio_data, sample_rate=16000)
         except WyomingError as e:
             logger.error("STT failed for %s: %s", satellite_id, e)
+            try:
+                await conn.send({"type": "PIPELINE_ERROR", "detail": f"STT failed: {e}"})
+            except Exception:
+                pass
             return
 
         transcript = transcript.strip()
         if not transcript:
             logger.info("Empty transcript from %s, ignoring", satellite_id)
+            try:
+                await conn.send({"type": "PIPELINE_ERROR", "detail": "Empty transcript"})
+            except Exception:
+                pass
             return
 
         logger.info("STT result from %s: %r", satellite_id, transcript)
@@ -341,13 +349,9 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
             len(tts_audio), tts_rate, tts_channels, satellite_id,
         )
 
-        # ── Step 4: Resample to 16kHz mono if needed ─────────────
+        # ── Step 4: Send at native rate (hardware handles conversion) ──
         playback_audio = tts_audio
         playback_rate = tts_rate
-
-        if tts_rate != 16000 and tts_width == 2:
-            playback_audio = _resample_pcm(tts_audio, tts_rate, 16000, tts_channels)
-            playback_rate = 16000
 
         # ── Step 5: Stream back to satellite ─────────────────────
         await conn.send({
@@ -379,6 +383,11 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         logger.warning("Satellite %s disconnected during pipeline", satellite_id)
     except Exception:
         logger.exception("Voice pipeline error for %s", satellite_id)
+        # Notify satellite to return to IDLE on failure
+        try:
+            await conn.send({"type": "PIPELINE_ERROR", "detail": "Voice pipeline failed"})
+        except Exception:
+            pass
 
 
 def _resample_pcm(data: bytes, src_rate: int, dst_rate: int, channels: int = 1) -> bytes:

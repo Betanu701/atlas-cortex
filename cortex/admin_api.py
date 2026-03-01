@@ -995,20 +995,16 @@ async def preview_tts(body: dict, admin: dict = Depends(require_admin)):
     channels = audio_info.get("channels", 1)
 
     if target != "browser":
-        # Push to satellite speaker
+        # Push to satellite speaker at native TTS rate (hardware handles conversion)
         import base64
-        from cortex.satellite.websocket import _resample_pcm
-        sat_audio = audio_data
-        if rate != 16000:
-            sat_audio = _resample_pcm(audio_data, rate, 16000, channels)
         conn = _connected_satellites_ref().get(target)
         if not conn:
             raise HTTPException(status_code=404, detail="Satellite not connected")
-        await conn.send({"type": "TTS_START", "sample_rate": 16000, "format": "pcm_16k_16bit_mono"})
-        for off in range(0, len(sat_audio), 4096):
-            await conn.send({"type": "TTS_CHUNK", "audio": base64.b64encode(sat_audio[off:off+4096]).decode()})
+        await conn.send({"type": "TTS_START", "sample_rate": rate, "format": f"pcm_{rate}_{width*8}bit_{channels}ch"})
+        for off in range(0, len(audio_data), 4096):
+            await conn.send({"type": "TTS_CHUNK", "audio": base64.b64encode(audio_data[off:off+4096]).decode()})
         await conn.send({"type": "TTS_END"})
-        return {"sent": True, "bytes": len(sat_audio)}
+        return {"sent": True, "bytes": len(audio_data)}
 
     # Return WAV for browser playback
     buf = io.BytesIO()
