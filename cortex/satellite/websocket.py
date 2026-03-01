@@ -30,11 +30,11 @@ from cortex.db import get_db, init_db
 
 logger = logging.getLogger(__name__)
 
-# Wyoming service addresses (configurable via env)
+# Wyoming service addresses (Piper fallback TTS + Faster-Whisper STT)
 _STT_HOST = os.environ.get("STT_HOST", "localhost")
 _STT_PORT = int(os.environ.get("STT_PORT", "10300"))
-_TTS_HOST = os.environ.get("TTS_HOST", "localhost")
-_TTS_PORT = int(os.environ.get("TTS_PORT", "10200"))
+_PIPER_HOST = os.environ.get("PIPER_HOST", os.environ.get("TTS_HOST", "localhost"))
+_PIPER_PORT = int(os.environ.get("PIPER_PORT", os.environ.get("TTS_PORT", "10200")))
 
 
 def _get_satellite_voice(satellite_id: str) -> str:
@@ -47,6 +47,18 @@ def _get_satellite_voice(satellite_id: str) -> str:
         return (row["tts_voice"] or "") if row else ""
     except Exception:
         return ""
+
+
+def _get_orpheus_provider():
+    """Return the Orpheus TTS provider if configured, else None."""
+    try:
+        from cortex.voice.providers import get_tts_provider, _env_config
+        cfg = _env_config()
+        if cfg.get("TTS_PROVIDER", "orpheus").lower() == "orpheus":
+            return get_tts_provider(cfg)
+    except Exception:
+        pass
+    return None
 
 
 # ── Connection registry ───────────────────────────────────────────
@@ -339,36 +351,64 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
 
         logger.info("Pipeline response for %s: %r", satellite_id, full_response[:200])
 
-        # ── Step 3: TTS ──────────────────────────────────────────
-        tts = WyomingClient(_TTS_HOST, _TTS_PORT, timeout=30.0)
-
-        # Use satellite's configured voice (if any)
+        # ── Step 3: TTS (Orpheus primary → Piper fallback) ────────
         tts_voice = _get_satellite_voice(satellite_id)
+        tts_audio = b""
+        tts_rate = 22050
+        tts_used = "none"
 
-        try:
-            tts_audio, audio_info = await tts.synthesize(full_response, voice=tts_voice or None)
-        except WyomingError as e:
-            logger.error("TTS failed for %s: %s", satellite_id, e)
-            return
+        # Try Orpheus first (GPU-accelerated, emotional speech)
+        orpheus = _get_orpheus_provider()
+        if orpheus:
+            try:
+                orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
+                orpheus_voice = tts_voice if tts_voice.replace("orpheus_", "") in orpheus_voices else "tara"
+                chunks = []
+                async for chunk in orpheus.synthesize(full_response, voice=orpheus_voice):
+                    chunks.append(chunk)
+                tts_audio = b"".join(chunks)
+                if tts_audio:
+                    # Check if WAV (from FastAPI), extract raw PCM
+                    if tts_audio[:4] == b"RIFF":
+                        import wave, io
+                        with wave.open(io.BytesIO(tts_audio), "rb") as wf:
+                            tts_rate = wf.getframerate()
+                            tts_audio = wf.readframes(wf.getnframes())
+                    else:
+                        # Raw PCM from SNAC decoder — always 24kHz
+                        tts_rate = 24000
+                    tts_used = "orpheus"
+                    logger.info("Orpheus TTS: %d bytes for %s", len(tts_audio), satellite_id)
+            except Exception as e:
+                logger.warning("Orpheus TTS failed, falling back to Piper: %s", e)
+                tts_audio = b""
+
+        # Piper fallback (CPU, fast, always available)
+        if not tts_audio:
+            try:
+                piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
+                piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
+                tts_audio, audio_info = await piper.synthesize(full_response, voice=piper_voice)
+                tts_rate = audio_info.get("rate", 22050)
+                tts_used = "piper"
+                logger.info("Piper TTS: %d bytes (%dHz) for %s", len(tts_audio), tts_rate, satellite_id)
+            except WyomingError as e:
+                logger.error("TTS failed (both Orpheus and Piper) for %s: %s", satellite_id, e)
+                return
 
         if not tts_audio:
             logger.warning("Empty TTS audio for %s", satellite_id)
             return
 
-        tts_rate = audio_info.get("rate", 22050)
-        tts_width = audio_info.get("width", 2)
-        tts_channels = audio_info.get("channels", 1)
-
         logger.info(
-            "TTS produced %d bytes (%dHz %dch) for %s",
-            len(tts_audio), tts_rate, tts_channels, satellite_id,
+            "TTS [%s] produced %d bytes (%dHz) for %s",
+            tts_used, len(tts_audio), tts_rate, satellite_id,
         )
 
-        # ── Step 4: Send at native rate (hardware handles conversion) ──
+        # ── Step 4: Stream back to satellite ─────────────────────
         playback_audio = tts_audio
         playback_rate = tts_rate
 
-        # ── Step 5: Stream back to satellite ─────────────────────
         await conn.send({
             "type": "TTS_START",
             "session_id": conn.session_id,

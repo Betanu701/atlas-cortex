@@ -2,8 +2,7 @@ services:
   # ── Atlas Cortex — main server + admin UI ───────────────────────
   # Uses host networking so satellites on the LAN can connect via
   # WebSocket and mDNS, and so the server can SSH to satellites for
-  # provisioning. Internal services are reached via localhost ports
-  # forwarded from the atlas bridge network.
+  # provisioning. Internal services are reached via localhost ports.
   atlas-cortex:
     build:
       context: ..
@@ -15,20 +14,24 @@ services:
     volumes:
       - atlas-data:/data
     environment:
+      # LLM — runs on primary GPU (atlas-ollama, port 11434)
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - LLM_URL=${LLM_URL:-http://localhost:11434}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - MODEL_FAST=${MODEL_FAST:-qwen2.5:7b}
       - MODEL_THINKING=${MODEL_THINKING:-qwen3:30b-a3b}
       - MODEL_EMBEDDING=${MODEL_EMBEDDING:-nomic-embed-text}
-      - TTS_HOST=${TTS_HOST:-localhost}
-      - TTS_PORT=${TTS_PORT:-10200}
+      # TTS — Orpheus primary (on voice GPU, port 11435), Piper fallback (port 10200)
+      - TTS_PROVIDER=${TTS_PROVIDER:-orpheus}
+      - ORPHEUS_URL=${ORPHEUS_URL:-http://localhost:11435}
+      - ORPHEUS_MODEL=${ORPHEUS_MODEL:-legraphista/Orpheus:3b-ft-q8}
+      - PIPER_HOST=${PIPER_HOST:-localhost}
+      - PIPER_PORT=${PIPER_PORT:-10200}
+      # STT — Faster-Whisper (port 10300)
       - STT_HOST=${STT_HOST:-localhost}
       - STT_PORT=${STT_PORT:-10300}
       - CORTEX_DATA_DIR=/data
       - CORTEX_PORT=${CORTEX_PORT:-5100}
-      - PIPER_URL=http://localhost:10200
-      - ORPHEUS_URL=${ORPHEUS_URL:-http://localhost:11434}
     depends_on:
       atlas-piper:
         condition: service_started
@@ -38,7 +41,8 @@ services:
         condition: service_started
 
   # ── Piper TTS — Wyoming protocol (port 10200) ──────────────────
-  # Lightweight CPU-only TTS. ~140MB RAM, sub-second synthesis.
+  # CPU-only fallback TTS. ~140MB RAM, sub-second synthesis.
+  # Used for instant responses when Orpheus latency is too high.
   atlas-piper:
     image: lscr.io/linuxserver/piper:latest
     container_name: atlas-piper
@@ -67,8 +71,7 @@ services:
       start_period: 30s
 
   # ── Faster-Whisper STT — Wyoming protocol (port 10300) ─────────
-  # Speech-to-text. ~3GB RAM with distil-large-v3.
-  # GPU: Attach AMD ROCm or Intel devices via .env overrides.
+  # Speech-to-text. ~3GB RAM with distil-large-v3 on CPU.
   atlas-whisper:
     image: lscr.io/linuxserver/faster-whisper:latest
     container_name: atlas-whisper
@@ -93,13 +96,11 @@ services:
       retries: 3
       start_period: 60s
 
-  # ── Ollama LLM — REST API (port 11434) ─────────────────────────
-  # Language model backend. GPU strongly recommended.
-  # Override OLLAMA_IMAGE in .env for GPU variants:
-  #   AMD ROCm:  ollama/ollama:rocm
-  #   CPU-only:  ollama/ollama:latest
+  # ── Ollama LLM — primary GPU (port 11434) ──────────────────────
+  # Main LLM backend on the largest GPU. Runs qwen2.5/qwen3.
+  # GPU: Use override files for AMD ROCm, Intel, or NVIDIA.
   atlas-ollama:
-    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    image: ${OLLAMA_LLM_IMAGE:-ollama/ollama:latest}
     container_name: atlas-ollama
     restart: unless-stopped
     ports:
@@ -108,6 +109,31 @@ services:
       - atlas-ollama-data:/root/.ollama
     environment:
       - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-0}
+    networks:
+      - atlas
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Ollama Voice — secondary GPU (port 11435) ──────────────────
+  # Dedicated voice GPU: Orpheus TTS (+ STT if GPU-capable).
+  # Runs on the second GPU so TTS is always loaded, zero switch latency.
+  # GPU: Use override files for AMD ROCm, Intel, or NVIDIA.
+  atlas-ollama-voice:
+    image: ${OLLAMA_VOICE_IMAGE:-ollama/ollama:latest}
+    container_name: atlas-ollama-voice
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    volumes:
+      - atlas-ollama-voice-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-0}
     networks:
       - atlas
     healthcheck:
@@ -129,4 +155,6 @@ volumes:
   atlas-whisper-data:
     driver: local
   atlas-ollama-data:
+    driver: local
+  atlas-ollama-voice-data:
     driver: local

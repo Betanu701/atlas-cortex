@@ -955,17 +955,37 @@ async def remove_satellite(satellite_id: str, admin: dict = Depends(require_admi
 
 @router.get("/tts/voices")
 async def list_tts_voices(admin: dict = Depends(require_admin)):
-    """List available TTS voices from the Piper Wyoming service."""
+    """List available TTS voices from Orpheus + Piper."""
     import os
     from cortex.voice.wyoming import WyomingClient
-    host = os.environ.get("TTS_HOST", "localhost")
-    port = int(os.environ.get("TTS_PORT", "10200"))
-    tts = WyomingClient(host, port)
+    all_voices = []
+
+    # Orpheus voices (primary)
     try:
-        voices = await tts.list_voices()
-        return {"voices": voices}
-    except Exception as e:
-        return {"voices": [], "error": str(e)}
+        from cortex.voice.providers.orpheus import _ORPHEUS_VOICES
+        for v in _ORPHEUS_VOICES:
+            all_voices.append({
+                "name": v["id"],
+                "provider": "orpheus",
+                "description": f"{v['name']} ({v['style']}, {v['gender']})",
+                "installed": True,
+            })
+    except Exception:
+        pass
+
+    # Piper voices (fallback)
+    try:
+        host = os.environ.get("PIPER_HOST", os.environ.get("TTS_HOST", "localhost"))
+        port = int(os.environ.get("PIPER_PORT", os.environ.get("TTS_PORT", "10200")))
+        tts = WyomingClient(host, port)
+        piper_voices = await tts.list_voices()
+        for v in piper_voices:
+            v["provider"] = "piper"
+            all_voices.append(v)
+    except Exception:
+        pass
+
+    return {"voices": all_voices}
 
 
 @router.post("/tts/preview")
@@ -981,21 +1001,51 @@ async def preview_tts(body: dict, admin: dict = Depends(require_admin)):
     voice = body.get("voice")
     target = body.get("target", "browser")  # "browser" or satellite_id
 
-    host = os.environ.get("TTS_HOST", "localhost")
-    port = int(os.environ.get("TTS_PORT", "10200"))
-    tts = WyomingClient(host, port, timeout=30.0)
+    audio_data = b""
+    rate = 22050
+    width = 2
+    channels = 1
 
-    try:
-        audio_data, audio_info = await tts.synthesize(text, voice=voice)
-    except WyomingError as e:
-        raise HTTPException(status_code=502, detail=f"TTS error: {e}")
+    # Try Orpheus for orpheus voices
+    orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
+    use_orpheus = voice and voice.replace("orpheus_", "") in orpheus_voices
+
+    if use_orpheus:
+        try:
+            from cortex.voice.providers import get_tts_provider, _env_config
+            provider = get_tts_provider(_env_config())
+            chunks = []
+            async for chunk in provider.synthesize(text, voice=voice):
+                chunks.append(chunk)
+            audio_data = b"".join(chunks)
+            if audio_data and audio_data[:4] == b"RIFF":
+                with wave.open(io.BytesIO(audio_data), "rb") as wf:
+                    rate = wf.getframerate()
+                    width = wf.getsampwidth()
+                    channels = wf.getnchannels()
+                    audio_data = wf.readframes(wf.getnframes())
+            elif audio_data:
+                rate = 24000  # SNAC decoder output
+        except Exception as e:
+            logger.warning("Orpheus preview failed, falling back to Piper: %s", e)
+            audio_data = b""
+
+    # Piper fallback
+    if not audio_data:
+        host = os.environ.get("PIPER_HOST", os.environ.get("TTS_HOST", "localhost"))
+        port = int(os.environ.get("PIPER_PORT", os.environ.get("TTS_PORT", "10200")))
+        tts = WyomingClient(host, port, timeout=30.0)
+        piper_voice = voice if voice and not voice.startswith("orpheus_") else None
+        try:
+            audio_data, audio_info = await tts.synthesize(text, voice=piper_voice)
+        except WyomingError as e:
+            raise HTTPException(status_code=502, detail=f"TTS error: {e}")
+        rate = audio_info.get("rate", 22050)
+        width = audio_info.get("width", 2)
+        channels = audio_info.get("channels", 1)
 
     if not audio_data:
         raise HTTPException(status_code=500, detail="TTS returned empty audio")
-
-    rate = audio_info.get("rate", 22050)
-    width = audio_info.get("width", 2)
-    channels = audio_info.get("channels", 1)
 
     if target != "browser":
         # Push to satellite speaker at native TTS rate (hardware handles conversion)
