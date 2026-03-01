@@ -882,6 +882,18 @@ async def test_satellite_audio(satellite_id: str, admin: dict = Depends(require_
     return {"sent": sent}
 
 
+@router.post("/satellites/{satellite_id}/command")
+async def send_satellite_command(satellite_id: str, body: dict, admin: dict = Depends(require_admin)):
+    """Send an arbitrary command to a connected satellite."""
+    from cortex.satellite.websocket import send_command
+    action = body.get("action", "")
+    params = body.get("params")
+    if not action:
+        raise HTTPException(status_code=400, detail="Missing action")
+    sent = await send_command(satellite_id, action, params)
+    return {"sent": sent}
+
+
 @router.delete("/satellites/{satellite_id}")
 async def remove_satellite(satellite_id: str, admin: dict = Depends(require_admin)):
     """Remove and deregister a satellite."""
