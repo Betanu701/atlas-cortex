@@ -194,7 +194,7 @@ services:
 
   # ── Model init — downloads Orpheus GGUF on first run ────────────
   atlas-orpheus-init:
-    image: curlimages/curl:latest
+    image: alpine:latest
     volumes:
       - atlas-orpheus-models:/app/models
     working_dir: /app
@@ -202,6 +202,7 @@ services:
       - ORPHEUS_MODEL_NAME=${ORPHEUS_MODEL_NAME:-Orpheus-3b-FT-Q8_0.gguf}
     command: >
       sh -c '
+      apk add --no-cache curl;
       MODEL="$$ORPHEUS_MODEL_NAME";
       if [ ! -f "/app/models/$$MODEL" ]; then
         echo "Downloading Orpheus model ($$MODEL)...";
