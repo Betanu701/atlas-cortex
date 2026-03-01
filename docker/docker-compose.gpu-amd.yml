@@ -22,7 +22,6 @@ services:
       - /dev/dri:/dev/dri
     group_add:
       - video
-      - render
 
   # Intel Arc for llama.cpp Orpheus inference
   atlas-llama-voice:
@@ -30,4 +29,3 @@ services:
       - /dev/dri:/dev/dri
     group_add:
       - video
-      - render
