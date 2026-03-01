@@ -52,16 +52,22 @@ def _load_snac_model():
 def extract_token_ids(text: str) -> list[int]:
     """Extract SNAC token IDs from Orpheus model output text.
 
-    The model outputs ``<custom_token_NNNNN>`` strings.  Each token's raw ID
-    must be offset-corrected: ``id = raw_id - 10 - (position_in_group % 7) * 4096``
-    where position_in_group is the index within the 7-token frame.
+    The model outputs ``<custom_token_NNNNN>`` strings. The first few are control
+    tokens (IDs < 10) that must be skipped. For audio tokens, each ID is
+    offset-corrected based on its position within the 7-token frame:
+    ``corrected = raw_id - 10 - (audio_count % 7) * 4096``
+
+    Only tokens resulting in valid range [0, 4096] are kept.
     """
     raw_ids = [int(m) for m in _TOKEN_RE.findall(text)]
     corrected = []
-    for i, raw_id in enumerate(raw_ids):
-        layer = i % 7
+    count = 0  # tracks only valid audio tokens (not control tokens)
+    for raw_id in raw_ids:
+        layer = count % 7
         corrected_id = raw_id - 10 - layer * 4096
-        corrected.append(corrected_id)
+        if 0 <= corrected_id <= 4096:
+            corrected.append(corrected_id)
+            count += 1
     return corrected
 
 

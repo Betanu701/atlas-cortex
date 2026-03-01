@@ -96,28 +96,32 @@ class OrpheusTTSProvider(TTSProvider):
     async def _synthesize_ollama(
         self, text: str, voice: str | None, emotion: str | None
     ) -> AsyncGenerator[bytes, None]:
-        """Generate audio via Ollama's chat completions + local SNAC decoding.
+        """Generate audio via Ollama's native generate API + local SNAC decoding.
 
-        1. Format prompt with Orpheus special tokens
-        2. Call Ollama /v1/chat/completions (OpenAI-compatible)
+        1. Format prompt with Orpheus special tokens (<|audio|>...<|eot_id|>)
+        2. Call Ollama /api/generate with raw=true
         3. Collect <custom_token_*> from streamed response
         4. Decode SNAC tokens → 24kHz PCM audio
         """
         from cortex.voice.snac_decoder import extract_token_ids, decode_tokens, SAMPLE_RATE
 
         bare_voice = (voice or "tara").replace("orpheus_", "")
-        prompt_text = self._format_prompt(text, voice, emotion)
+        inner_text = self._format_prompt(text, voice, emotion)
+        # Orpheus requires special tokens to enter audio generation mode
+        prompt = f"<|audio|>{inner_text}<|eot_id|>"
 
-        # Use Ollama's OpenAI-compatible chat endpoint
-        url = f"{self.ollama_url}/v1/chat/completions"
+        url = f"{self.ollama_url}/api/generate"
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt_text}],
-            "max_tokens": 8192,
-            "temperature": 0.6,
-            "top_p": 0.9,
-            "repetition_penalty": 1.1,
+            "prompt": prompt,
+            "raw": True,
             "stream": True,
+            "options": {
+                "temperature": 0.6,
+                "top_p": 0.9,
+                "repeat_penalty": 1.1,
+                "num_predict": 8192,
+            },
         }
 
         full_response = ""
@@ -129,21 +133,18 @@ class OrpheusTTSProvider(TTSProvider):
                         logger.error("Ollama Orpheus request failed (%d): %s", resp.status, error_text[:200])
                         return
 
-                    # Stream SSE response, collecting token text
                     async for raw_line in resp.content:
                         line = raw_line.decode("utf-8", errors="replace").strip()
-                        if not line or not line.startswith("data: "):
+                        if not line:
                             continue
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
                         try:
-                            data = json.loads(data_str)
-                            delta = data.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                full_response += content
-                        except (json.JSONDecodeError, IndexError, KeyError):
+                            obj = json.loads(line)
+                            token_text = obj.get("response", "")
+                            if token_text:
+                                full_response += token_text
+                            if obj.get("done", False):
+                                break
+                        except json.JSONDecodeError:
                             continue
 
         except Exception as e:
