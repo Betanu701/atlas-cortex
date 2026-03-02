@@ -495,56 +495,46 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         logger.info("Pipeline response for %s (LLM %.0fms): %r", satellite_id, llm_ms, full_response[:200])
 
         # ── Step 3: TTS ──────────────────────────────────────────
-        # Orpheus: single call for full response (GPU, one inference pass)
-        # Piper fallback: sentence-by-sentence (CPU, fast per call)
+        # Piper primary: CPU, very fast (~200ms for typical response)
+        # Orpheus fallback: GPU, higher quality but ~1s/word currently
         t_tts_start = time.monotonic()
         tts_used = "none"
         total_tts_bytes = 0
         tts_audio = b""
         tts_rate = 22050
 
-        orpheus = _get_orpheus_provider()
-        if orpheus:
-            try:
-                orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
-                orpheus_voice = tts_voice if tts_voice.replace("orpheus_", "") in orpheus_voices else "tara"
-                chunks = []
-                async for chunk in orpheus.synthesize(full_response, voice=orpheus_voice):
-                    chunks.append(chunk)
-                tts_audio = b"".join(chunks)
-                if tts_audio:
-                    if tts_audio[:4] == b"RIFF":
-                        import wave, io
-                        with wave.open(io.BytesIO(tts_audio), "rb") as wf:
-                            tts_rate = wf.getframerate()
-                            tts_audio = wf.readframes(wf.getnframes())
-                    else:
-                        tts_rate = 24000
-                    tts_used = "orpheus"
-            except Exception as e:
-                logger.warning("Orpheus TTS failed, falling back to Piper: %s", e)
-                tts_audio = b""
+        # Use Piper for fast TTS (always available, CPU)
+        try:
+            piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
+            piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
+            tts_audio, audio_info = await piper.synthesize(full_response, voice=piper_voice)
+            tts_rate = audio_info.get("rate", 22050)
+            tts_used = "piper"
+        except WyomingError as e:
+            logger.warning("Piper TTS failed: %s", e)
 
-        # Piper fallback (CPU, sentence-by-sentence for faster first-audio)
+        # Orpheus fallback (GPU, higher quality voice, slower)
         if not tts_audio:
-            sentences = _split_sentences(full_response)
-            audio_parts: list[bytes] = []
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if not sentence:
-                    continue
+            orpheus = _get_orpheus_provider()
+            if orpheus:
                 try:
-                    piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
-                    piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
-                    sent_audio, audio_info = await piper.synthesize(sentence, voice=piper_voice)
-                    tts_rate = audio_info.get("rate", 22050)
-                    audio_parts.append(sent_audio)
-                except WyomingError as e:
-                    logger.error("Piper TTS failed for sentence: %s", e)
-                    continue
-            if audio_parts:
-                tts_audio = b"".join(audio_parts)
-                tts_used = "piper"
+                    orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
+                    orpheus_voice = tts_voice if tts_voice.replace("orpheus_", "") in orpheus_voices else "tara"
+                    chunks = []
+                    async for chunk in orpheus.synthesize(full_response, voice=orpheus_voice):
+                        chunks.append(chunk)
+                    tts_audio = b"".join(chunks)
+                    if tts_audio:
+                        if tts_audio[:4] == b"RIFF":
+                            import wave, io
+                            with wave.open(io.BytesIO(tts_audio), "rb") as wf:
+                                tts_rate = wf.getframerate()
+                                tts_audio = wf.readframes(wf.getnframes())
+                        else:
+                            tts_rate = 24000
+                        tts_used = "orpheus"
+                except Exception as e:
+                    logger.error("Orpheus TTS also failed: %s", e)
 
         if not tts_audio:
             logger.warning("All TTS failed for %s", satellite_id)
