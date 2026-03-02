@@ -85,16 +85,22 @@ services:
       - atlas-whisper-data:/models
     environment:
       - GGML_VK_VISIBLE_DEVICES=${WHISPER_VK_DEVICE:-0}
-    command: >-
-      /app/build/bin/whisper-server
-        -m /models/ggml-${WHISPER_MODEL:-large-v3-turbo}.bin
-        -l ${WHISPER_LANG:-en}
-        -bs ${WHISPER_BEAM:-5}
-        --host 0.0.0.0
-        --port 10300
-        --convert
-        --suppress-nst
-        --no-speech-thold 0.6
+    entrypoint: ["/app/build/bin/whisper-server"]
+    command:
+      - -m
+      - /models/ggml-${WHISPER_MODEL:-large-v3-turbo}.bin
+      - -l
+      - ${WHISPER_LANG:-en}
+      - -bs
+      - ${WHISPER_BEAM:-5}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "10300"
+      - --convert
+      - --suppress-nst
+      - --no-speech-thold
+      - "0.6"
     networks:
       - atlas
     healthcheck:
