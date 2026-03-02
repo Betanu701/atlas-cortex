@@ -48,8 +48,8 @@ class SatelliteConfig:
     filler_enabled: bool = True
 
     # Silence detection
-    silence_threshold_frames: int = 30  # ~900ms at 30ms/frame
-    speech_threshold_frames: int = 10  # ~300ms to confirm speech
+    silence_threshold_frames: int = 15  # ~450ms at 30ms/frame
+    speech_threshold_frames: int = 3  # ~90ms to confirm speech start
 
     # LED master brightness (0.0-1.0, scales all pattern brightnesses)
     led_brightness: float = 1.0

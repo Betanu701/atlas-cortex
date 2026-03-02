@@ -84,11 +84,12 @@ def _get_user_voice(user_id: str) -> str:
 
 
 def _resolve_voice(satellite_id: str, user_id: str = "") -> str:
-    """Resolve the effective TTS voice: user → satellite → system default → env."""
+    """Resolve the effective TTS voice: user → system default → env.
+
+    Voice is system-level by default, with per-user override — not per-satellite
+    or per-speaker.
+    """
     voice = _get_user_voice(user_id)
-    if voice:
-        return voice
-    voice = _get_satellite_voice(satellite_id)
     if voice:
         return voice
     voice = _get_system_default_voice()
