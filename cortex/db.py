@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     preferred_tone      TEXT DEFAULT 'neutral',
     communication_style TEXT DEFAULT 'moderate',
     humor_style         TEXT,
+    preferred_voice     TEXT DEFAULT '',
     is_parent           BOOLEAN DEFAULT FALSE,
     parent_user_id      TEXT,
     onboarding_complete BOOLEAN DEFAULT FALSE,
@@ -702,6 +703,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "satellites", "tts_voice", "TEXT DEFAULT ''")
     _add_column_if_missing(conn, "satellites", "vad_enabled", "BOOLEAN DEFAULT 1")
     _add_column_if_missing(conn, "satellites", "led_brightness", "REAL DEFAULT 1.0")
+    _add_column_if_missing(conn, "user_profiles", "preferred_voice", "TEXT DEFAULT ''")
 
 
 def _add_column_if_missing(

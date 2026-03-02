@@ -69,8 +69,25 @@ def _get_system_default_voice() -> str:
         return ""
 
 
-def _resolve_voice(satellite_id: str) -> str:
-    """Resolve the effective TTS voice: satellite override → system default → env default."""
+def _get_user_voice(user_id: str) -> str:
+    """Read the preferred TTS voice for a user from DB."""
+    if not user_id:
+        return ""
+    try:
+        db = get_db()
+        row = db.execute(
+            "SELECT preferred_voice FROM user_profiles WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return (row["preferred_voice"] or "") if row else ""
+    except Exception:
+        return ""
+
+
+def _resolve_voice(satellite_id: str, user_id: str = "") -> str:
+    """Resolve the effective TTS voice: user → satellite → system default → env."""
+    voice = _get_user_voice(user_id)
+    if voice:
+        return voice
     voice = _get_satellite_voice(satellite_id)
     if voice:
         return voice

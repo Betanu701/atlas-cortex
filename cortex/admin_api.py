@@ -189,6 +189,29 @@ async def get_user(user_id: str, _: dict = Depends(require_admin)):
     return user
 
 
+class UserCreate(BaseModel):
+    display_name: str
+    user_id: str | None = None
+
+
+@router.post("/users")
+async def create_user(body: UserCreate, _: dict = Depends(require_admin)):
+    """Create a new user profile."""
+    import uuid
+    conn = _db()
+    user_id = body.user_id or f"user-{uuid.uuid4().hex[:8]}"
+    try:
+        conn.execute(
+            "INSERT INTO user_profiles (user_id, display_name) VALUES (?, ?)",
+            (user_id, body.display_name),
+        )
+        conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=409, detail=f"User already exists: {e}")
+    cur = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,))
+    return _row(cur)
+
+
 class UserUpdate(BaseModel):
     display_name: str | None = None
     age: int | None = None
@@ -198,6 +221,7 @@ class UserUpdate(BaseModel):
     preferred_tone: str | None = None
     communication_style: str | None = None
     humor_style: str | None = None
+    preferred_voice: str | None = None
     is_parent: bool | None = None
     onboarding_complete: bool | None = None
 
@@ -205,7 +229,8 @@ class UserUpdate(BaseModel):
 @router.patch("/users/{user_id}")
 async def update_user(user_id: str, update: UserUpdate, _: dict = Depends(require_admin)):
     conn = _db()
-    fields = {k: v for k, v in update.model_dump().items() if v is not None}
+    # exclude_unset allows explicit empty strings (e.g. clearing preferred_voice)
+    fields = {k: v for k, v in update.model_dump(exclude_unset=True).items()}
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
