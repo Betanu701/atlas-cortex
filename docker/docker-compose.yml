@@ -69,31 +69,63 @@ services:
       retries: 3
       start_period: 30s
 
-  # ── Faster-Whisper STT — Wyoming protocol (port 10300) ─────────
-  # Speech-to-text. ~3GB RAM with distil-large-v3 on CPU.
+  # ── Whisper.cpp STT — HTTP API (port 10300) ──────────────────────
+  # Speech-to-text via whisper.cpp with Vulkan GPU acceleration.
+  # GPU: Intel Arc B580 shares GPU 1 with Orpheus TTS.
   atlas-whisper:
-    image: lscr.io/linuxserver/faster-whisper:latest
+    image: ghcr.io/ggml-org/whisper.cpp:main-vulkan
     container_name: atlas-whisper
     restart: unless-stopped
+    depends_on:
+      atlas-whisper-init:
+        condition: service_completed_successfully
     ports:
       - "10300:10300"
     volumes:
-      - atlas-whisper-data:/config
+      - atlas-whisper-data:/models
     environment:
-      - PUID=${PUID:-99}
-      - PGID=${PGID:-100}
-      - TZ=${TZ:-America/New_York}
-      - WHISPER_MODEL=${WHISPER_MODEL:-distil-large-v3}
-      - WHISPER_BEAM=${WHISPER_BEAM:-1}
-      - WHISPER_LANG=${WHISPER_LANG:-en}
+      - GGML_VK_VISIBLE_DEVICES=${WHISPER_VK_DEVICE:-0}
+    command: >-
+      /app/build/bin/whisper-server
+        -m /models/ggml-${WHISPER_MODEL:-large-v3-turbo}.bin
+        -l ${WHISPER_LANG:-en}
+        -bs ${WHISPER_BEAM:-5}
+        --host 0.0.0.0
+        --port 10300
+        --convert
+        --suppress-nst
+        --no-speech-thold 0.6
     networks:
       - atlas
     healthcheck:
-      test: ["CMD-SHELL", "echo | nc -w 2 localhost 10300 || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:10300/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 90s
+
+  # ── Whisper model downloader (init container) ──────────────────
+  atlas-whisper-init:
+    image: alpine:latest
+    container_name: atlas-whisper-init
+    restart: "no"
+    volumes:
+      - atlas-whisper-data:/models
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        MODEL="ggml-$${WHISPER_MODEL:-large-v3-turbo}.bin"
+        if [ -f "/models/$$MODEL" ]; then
+          echo "Model $$MODEL already exists, skipping download"
+          exit 0
+        fi
+        echo "Downloading whisper model: $$MODEL"
+        apk add --no-cache curl
+        curl -L -o "/models/$$MODEL" \
+          "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$$MODEL"
+        echo "Download complete: $$MODEL ($(du -h /models/$$MODEL | cut -f1))"
+    networks:
+      - atlas
 
   # ── Ollama LLM — primary GPU (port 11434) ──────────────────────
   # Main LLM backend on the largest GPU. Runs qwen2.5/qwen3.

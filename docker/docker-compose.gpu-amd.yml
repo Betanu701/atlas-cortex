@@ -33,3 +33,12 @@ services:
       - video
     environment:
       - GGML_VK_VISIBLE_DEVICES=1
+
+  # Intel Arc Vulkan for whisper.cpp STT
+  atlas-whisper:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+    environment:
+      - GGML_VK_VISIBLE_DEVICES=1

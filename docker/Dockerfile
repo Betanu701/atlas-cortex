@@ -39,6 +39,7 @@ ENV CORTEX_PORT=5100
 # Default service discovery (host networking — services publish ports)
 ENV PIPER_HOST=localhost
 ENV PIPER_PORT=10200
+ENV STT_BACKEND=whisper_cpp
 ENV STT_HOST=localhost
 ENV STT_PORT=10300
 ENV LLM_URL=http://localhost:11434

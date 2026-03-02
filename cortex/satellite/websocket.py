@@ -30,7 +30,8 @@ from cortex.db import get_db, init_db
 
 logger = logging.getLogger(__name__)
 
-# Wyoming service addresses (Piper fallback TTS + Faster-Whisper STT)
+# STT configuration — supports "whisper_cpp" (HTTP) and "wyoming" (TCP) backends
+_STT_BACKEND = os.environ.get("STT_BACKEND", "whisper_cpp")
 _STT_HOST = os.environ.get("STT_HOST", "localhost")
 _STT_PORT = int(os.environ.get("STT_PORT", "10300"))
 _PIPER_HOST = os.environ.get("PIPER_HOST", os.environ.get("TTS_HOST", "localhost"))
@@ -297,18 +298,23 @@ async def _handle_status(conn: SatelliteConnection, msg: dict) -> None:
 
 async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) -> None:
     """Full STT → Pipeline → TTS → stream back to satellite."""
-    from cortex.voice.wyoming import WyomingClient, WyomingError
 
     satellite_id = conn.satellite_id
 
     try:
         # ── Step 1: STT ──────────────────────────────────────────
-        stt = WyomingClient(_STT_HOST, _STT_PORT, timeout=30.0)
-        logger.info("Running STT on %d bytes from %s", len(audio_data), satellite_id)
+        logger.info("Running STT on %d bytes from %s (backend=%s)", len(audio_data), satellite_id, _STT_BACKEND)
 
         try:
-            transcript = await stt.transcribe(audio_data, sample_rate=16000)
-        except WyomingError as e:
+            if _STT_BACKEND == "whisper_cpp":
+                from cortex.voice.whisper_cpp import WhisperCppClient, WhisperCppError
+                stt_client = WhisperCppClient(_STT_HOST, _STT_PORT, timeout=60.0)
+                transcript = await stt_client.transcribe(audio_data, sample_rate=16000)
+            else:
+                from cortex.voice.wyoming import WyomingClient, WyomingError as _WErr
+                stt_client = WyomingClient(_STT_HOST, _STT_PORT, timeout=30.0)
+                transcript = await stt_client.transcribe(audio_data, sample_rate=16000)
+        except Exception as e:
             logger.error("STT failed for %s: %s", satellite_id, e)
             try:
                 await conn.send({"type": "PIPELINE_ERROR", "detail": f"STT failed: {e}"})
