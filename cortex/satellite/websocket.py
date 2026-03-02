@@ -658,7 +658,14 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         logger.info("Pipeline response for %s (LLM %.0fms): %r", satellite_id, llm_ms, full_response[:200])
 
         # ── Step 3: Final sentence + auto-listen ─────────────────
-        is_question = full_response.rstrip().endswith("?")
+        # Only auto-listen for direct questions to the user, not rhetorical
+        # questions or statements. Look for "?" at end of a short final sentence.
+        last_sentence = full_response.rstrip().rsplit(".", 1)[-1].strip()
+        is_question = (
+            last_sentence.endswith("?")
+            and len(last_sentence) < 100
+            and not last_sentence.lower().startswith(("i wonder", "who knows"))
+        )
 
         if token_buf.strip():
             t_sent = time.monotonic()
@@ -689,13 +696,10 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
             logger.warning("No sentences synthesized for %s", satellite_id)
             return
 
-        # Auto-listen: if the response was a question, tell satellite to listen
+        # Auto-listen is handled via auto_listen flag in TTS_END;
+        # no separate COMMAND needed.
         if is_question:
-            try:
-                await conn.send({"type": "COMMAND", "action": "listen", "params": {}})
-                logger.info("Auto-listen sent to %s (response was a question)", satellite_id)
-            except Exception:
-                pass
+            logger.info("Response was a question — auto_listen flag set for %s", satellite_id)
 
         t_total = time.monotonic() - t_start
         logger.info(

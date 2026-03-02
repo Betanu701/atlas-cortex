@@ -388,8 +388,8 @@ class SatelliteAgent:
             logger.info("Auto-listen: transitioning to LISTENING for follow-up")
             self.vad.reset()
             self.state = State.IDLE
-            # Brief pause for echo to dissipate before listening
-            await asyncio.sleep(0.8)
+            # Wait for echo to fully dissipate before listening
+            await asyncio.sleep(1.5)
             if self.state == State.IDLE:  # not interrupted by something else
                 await self._transition_to_listening(1.0)
             return

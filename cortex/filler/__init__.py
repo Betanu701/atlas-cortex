@@ -15,6 +15,7 @@ Falls back to built-in default pools when no DB rows are present.
 from __future__ import annotations
 
 import random
+from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -85,6 +86,11 @@ CONFIDENCE_FILLERS: dict[str, list[str]] = {
 
 # Sentiments where no filler is ever appropriate
 _NO_FILLER_SENTIMENTS = {"command", "casual"}
+
+# In-memory dedup: track last N fillers per sentiment to avoid repetition
+# even when no DB connection is available.
+_recent_fillers: dict[str, deque[str]] = {}
+_RECENT_DEDUP_SIZE = 3
 
 
 def select_filler(
@@ -162,11 +168,19 @@ def _pick_sentiment_filler(
         except Exception:
             pass
 
-    # Fall back to built-in defaults
+    # Fall back to built-in defaults with in-memory dedup
     pool = DEFAULT_FILLERS.get(sentiment, [])
     if not pool:
         return ""
-    return random.choice(pool)
+    recent = _recent_fillers.get(sentiment, deque(maxlen=_RECENT_DEDUP_SIZE))
+    candidates = [p for p in pool if p not in recent]
+    if not candidates:
+        candidates = pool  # all used recently — reset
+    choice = random.choice(candidates)
+    if sentiment not in _recent_fillers:
+        _recent_fillers[sentiment] = deque(maxlen=_RECENT_DEDUP_SIZE)
+    _recent_fillers[sentiment].append(choice)
+    return choice
 
 
 def _pick_confidence_filler(confidence: float) -> str:
