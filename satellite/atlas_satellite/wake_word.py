@@ -37,32 +37,33 @@ class WakeWordDetector:
         try:
             from openwakeword.model import Model
 
-            kwargs = {}
+            model_paths = []
             if model_path and os.path.isfile(model_path):
-                kwargs["wakeword_models"] = [model_path]
+                model_paths = [model_path]
                 self._model_name = os.path.splitext(os.path.basename(model_path))[0]
                 logger.info("Using custom wake word model: %s", model_path)
-            else:
-                if model_path:
-                    logger.warning("Model not found at %s, using defaults", model_path)
+            elif model_path:
+                logger.warning("Model not found at %s, using defaults", model_path)
 
-            # Try ONNX inference framework (works on 64-bit ARM)
+            # v0.4.0 passes **kwargs to AudioFeatures, so only use named params
             try:
                 import onnxruntime  # noqa: F401
-                kwargs["inference_framework"] = "onnx"
-            except ImportError:
-                kwargs["inference_framework"] = "tflite"
+                self._detector = Model(
+                    wakeword_model_paths=model_paths,
+                    inference_framework="onnx",
+                )
+                fw = "onnx"
+            except (ImportError, TypeError):
+                try:
+                    self._detector = Model(wakeword_model_paths=model_paths)
+                    fw = "auto"
+                except TypeError:
+                    self._detector = Model()
+                    fw = "auto"
 
-            try:
-                self._detector = Model(**kwargs)
-            except TypeError:
-                # openwakeword v0.4.0+ removed inference_framework from AudioFeatures
-                kwargs.pop("inference_framework", None)
-                self._detector = Model(**kwargs)
             self._backend = "openwakeword"
             models = list(self._detector.models.keys())
-            logger.info("Wake word backend: openwakeword (%s), models: %s",
-                        kwargs.get("inference_framework", "auto"), models)
+            logger.info("Wake word backend: openwakeword (%s), models: %s", fw, models)
         except ImportError:
             logger.info(
                 "openwakeword not installed — wake word detection disabled. "

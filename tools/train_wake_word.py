@@ -172,7 +172,7 @@ def augment_single(audio, total_length=32000):
 # ── Feature computation ──────────────────────────────────────────
 
 def compute_features_batch(wav_dir, total_length=32000, augmentation_rounds=2):
-    """Compute openwakeword embedding features for all clips in a directory."""
+    """Compute openwakeword embedding features for all clips in a directory using batch API."""
     from openwakeword.utils import AudioFeatures
     af = AudioFeatures()
 
@@ -181,44 +181,33 @@ def compute_features_batch(wav_dir, total_length=32000, augmentation_rounds=2):
         return np.array([])
 
     all_features = []
-    frame_size = int(16000 * 0.08)  # 1280 samples per 80ms frame
+    batch_size = 128
 
     for round_idx in range(augmentation_rounds):
         logger.info("    Round %d/%d (%d clips)...", round_idx + 1, augmentation_rounds, len(wav_files))
-        for i, wav_path in enumerate(wav_files):
+        clips = []
+        for wav_path in wav_files:
             try:
                 sr, audio = scipy.io.wavfile.read(str(wav_path))
                 if audio.ndim > 1:
                     audio = audio.mean(axis=1).astype(np.int16)
-                augmented = augment_single(audio, total_length)
-
-                features_for_clip = []
-                af.reset()
-                for f_idx in range(len(augmented) // frame_size):
-                    frame = augmented[f_idx * frame_size:(f_idx + 1) * frame_size]
-                    feat = af(frame)
-                    if feat.shape[0] > 0:
-                        features_for_clip.append(feat)
-
-                if features_for_clip:
-                    all_features.append(np.concatenate(features_for_clip, axis=0))
+                clips.append(augment_single(audio, total_length))
             except Exception as e:
-                logger.warning("Failed: %s: %s", wav_path.name, e)
+                logger.warning("Failed to load: %s: %s", wav_path.name, e)
 
-            if (i + 1) % 500 == 0:
-                logger.info("      Processed %d/%d", i + 1, len(wav_files))
+        if not clips:
+            continue
+
+        clip_array = np.array(clips, dtype=np.int16)
+        logger.info("    Computing embeddings for %d clips in batches of %d...", len(clip_array), batch_size)
+        features = af.embed_clips(clip_array, batch_size=batch_size)
+        logger.info("    Batch embeddings shape: %s", features.shape)
+        all_features.append(features)
 
     if not all_features:
         return np.array([])
 
-    target_frames = 16  # openwakeword standard: 16 frames × 96-dim
-    padded = []
-    for f in all_features:
-        if f.shape[0] >= target_frames:
-            padded.append(f[-target_frames:])
-        else:
-            padded.append(np.pad(f, ((target_frames - f.shape[0], 0), (0, 0)), mode='constant'))
-    return np.array(padded, dtype=np.float32)
+    return np.concatenate(all_features, axis=0).astype(np.float32)
 
 
 # ── Model training ───────────────────────────────────────────────
