@@ -153,12 +153,12 @@ services:
       retries: 5
       start_period: 60s
 
-  # ── llama.cpp Voice — Orpheus inference on Intel GPU (port 5006) ─
-  # Runs the Orpheus GGUF model for token generation. Intel GPU via
-  # llama.cpp full-intel image. SNAC tokens sent to atlas-orpheus
-  # for decoding.
+  # ── llama.cpp Voice — Orpheus inference on GPU (port 5006) ────────
+  # Runs the Orpheus GGUF model for token generation. Uses Vulkan
+  # backend which benchmarked 25% faster than SYCL on Intel Arc B580
+  # (26.5 vs 21.2 tok/s). GPU device selection via override files.
   atlas-llama-voice:
-    image: ghcr.io/ggml-org/llama.cpp:full-intel
+    image: ghcr.io/ggml-org/llama.cpp:full-vulkan
     container_name: atlas-llama-voice
     restart: unless-stopped
     ports:
@@ -181,9 +181,13 @@ services:
       - "--n-gpu-layers"
       - "99"
       - "--ctx-size"
-      - "8192"
+      - "4096"
       - "--n-predict"
-      - "8192"
+      - "4096"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
       - "--no-mmap"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:5006/health || exit 1"]
