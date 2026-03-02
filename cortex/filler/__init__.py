@@ -26,12 +26,38 @@ if TYPE_CHECKING:
 # ──────────────────────────────────────────────────────────────
 
 DEFAULT_FILLERS: dict[str, list[str]] = {
-    "greeting":   ["Hey! ", "Morning! ", "What's up? ", "Yo! ", "Hey there. "],
-    "question":   ["Hmm — ", "Let me think... ", "So — ", "Alright — ", "Okay, "],
-    "frustrated": ["I hear you. ", "Yeah, that's annoying. ", "Ugh, let me look at this. "],
-    "excited":    ["Nice! ", "Oh cool — ", "Hell yeah! "],
-    "late_night": ["Still at it? ", "Alright, ", "Late one, huh? "],
-    "follow_up":  ["So — ", "Right, ", "Okay — "],
+    "greeting":   [
+        "Hey! Good to hear from you. ",
+        "Hey there! What can I do for you? ",
+        "Morning! Let me see what I can help with. ",
+    ],
+    "question":   [
+        "Great question — let me think about that for a second. ",
+        "Hmm, let me work through that. ",
+        "Okay, let me look into that for you. ",
+        "Good one — give me just a moment. ",
+        "Alright, let me pull that together. ",
+    ],
+    "frustrated": [
+        "I hear you — let me see what I can do about that. ",
+        "Yeah, that's frustrating. Let me take a look. ",
+        "Ugh, that's annoying. Let me dig into it. ",
+    ],
+    "excited":    [
+        "Oh nice! Let me check on that. ",
+        "That's awesome — here's what I've got. ",
+        "Love it! Let me see. ",
+    ],
+    "late_night": [
+        "Still at it? Alright, let me help with that. ",
+        "Late one, huh? Let me see what I can find. ",
+        "Burning the midnight oil — let me take a look. ",
+    ],
+    "follow_up":  [
+        "Right, so — ",
+        "Okay, building on that — ",
+        "Sure thing. ",
+    ],
     # command / casual → no filler
     "command":    [],
     "casual":     [],
