@@ -357,6 +357,7 @@ class SatelliteAgent:
     async def _on_tts_end(self, msg: dict) -> None:
         """TTS stream complete — play the buffered audio."""
         is_filler = msg.get("is_filler", False)
+        auto_listen = msg.get("auto_listen", False)
         logger.info("TTS_END received (%d bytes buffered, rate=%d, filler=%s)",
                      len(self._tts_buffer), self._tts_sample_rate, is_filler)
         self.state = State.SPEAKING
@@ -368,8 +369,8 @@ class SatelliteAgent:
             )
             self._tts_buffer.clear()
 
-        # Suppress echo: ignore VAD/wake for 3s after playback ends
-        self._echo_suppress_until = time.monotonic() + 3.0
+        # Suppress echo: ignore VAD/wake for a short window after playback
+        self._echo_suppress_until = time.monotonic() + 1.5
 
         # Reset wake word model to clear internal audio buffers
         # (prevents TTS playback from triggering false wake detections)
@@ -380,6 +381,17 @@ class SatelliteAgent:
         if is_filler:
             self.state = State.PROCESSING
             self.led.set_pattern("processing")
+            return
+
+        # Auto-listen: system asked a question, start listening for reply
+        if auto_listen:
+            logger.info("Auto-listen: transitioning to LISTENING for follow-up")
+            self.vad.reset()
+            self.state = State.IDLE
+            # Brief pause for echo to dissipate before listening
+            await asyncio.sleep(0.8)
+            if self.state == State.IDLE:  # not interrupted by something else
+                await self._transition_to_listening(1.0)
             return
 
         # Return to idle

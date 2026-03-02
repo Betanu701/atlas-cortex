@@ -385,6 +385,9 @@ def _is_hallucinated(transcript: str) -> bool:
 
 _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 
+# Sentence boundary for streaming: punctuation followed by whitespace
+_STREAM_SENT_RE = re.compile(r'[.!?]\s+')
+
 
 def _split_sentences(text: str) -> list[str]:
     """Split text into sentences at punctuation boundaries.
@@ -409,6 +412,76 @@ def _split_sentences(text: str) -> list[str]:
         else:
             sentences.append(buf)
     return sentences
+
+
+def _extract_pcm(raw_audio: bytes, default_rate: int = 24000) -> tuple[bytes, int]:
+    """Extract PCM data and sample rate from WAV or raw audio."""
+    if raw_audio and raw_audio[:4] == b"RIFF":
+        import wave, io
+        with wave.open(io.BytesIO(raw_audio), "rb") as wf:
+            return wf.readframes(wf.getnframes()), wf.getframerate()
+    return raw_audio, default_rate
+
+
+async def _synthesize_text(text: str, voice: str) -> tuple[bytes, int, str]:
+    """Synthesize text to PCM audio using available TTS providers.
+
+    Returns (pcm_audio, sample_rate, provider_name).
+    """
+    from cortex.voice.wyoming import WyomingClient, WyomingError
+
+    if _TTS_PROVIDER in ("kokoro", "auto"):
+        try:
+            from cortex.voice.kokoro import KokoroClient
+            kokoro = KokoroClient(_KOKORO_HOST, _KOKORO_PORT, timeout=15.0)
+            kokoro_voice = voice if voice and not voice.startswith("orpheus_") else _KOKORO_VOICE
+            raw, info = await kokoro.synthesize(text, voice=kokoro_voice, response_format="wav")
+            if raw:
+                pcm, rate = _extract_pcm(raw, info.get("rate", 24000))
+                return pcm, rate, "kokoro"
+        except Exception as e:
+            logger.warning("Kokoro TTS failed: %s", e)
+
+    try:
+        piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=15.0)
+        piper_voice = voice if voice and not voice.startswith("orpheus_") else None
+        audio, info = await piper.synthesize(text, voice=piper_voice)
+        return audio, info.get("rate", 22050), "piper"
+    except Exception as e:
+        logger.warning("Piper TTS failed: %s", e)
+
+    return b"", 24000, "none"
+
+
+async def _stream_audio_to_satellite(
+    conn: SatelliteConnection, audio: bytes, rate: int,
+    text: str, is_filler: bool = False, auto_listen: bool = False,
+) -> None:
+    """Stream PCM audio to a satellite as TTS_START/CHUNK/END."""
+    await conn.send({
+        "type": "TTS_START",
+        "session_id": conn.session_id,
+        "format": f"pcm_{rate // 1000}k_16bit_mono",
+        "sample_rate": rate,
+        "text": text,
+        "is_filler": is_filler,
+    })
+    chunk_size = 4096
+    for offset in range(0, len(audio), chunk_size):
+        chunk = audio[offset:offset + chunk_size]
+        await conn.send({
+            "type": "TTS_CHUNK",
+            "session_id": conn.session_id,
+            "audio": base64.b64encode(chunk).decode("ascii"),
+        })
+    msg: dict[str, Any] = {
+        "type": "TTS_END",
+        "session_id": conn.session_id,
+        "is_filler": is_filler,
+    }
+    if auto_listen:
+        msg["auto_listen"] = True
+    await conn.send(msg)
 
 
 async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) -> None:
@@ -520,70 +593,59 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         )
 
         # Layer 3 yields filler text first, then LLM tokens.
-        # Synthesize and stream the filler immediately via Piper (fast, <300ms)
-        # while continuing to collect LLM tokens.
+        # Sentence-level streaming: synthesize and send each sentence
+        # as it completes from the LLM, eliminating dead-air gaps.
         filler_text = ""
-        response_parts: list[str] = []
         first_token = True
         tts_voice = _resolve_voice(satellite_id)
+        token_buf = ""
+        response_parts: list[str] = []
+        sentences_sent = 0
+        total_tts_bytes = 0
+        tts_used = "none"
 
         async for token in pipeline_gen:
             if first_token:
                 first_token = False
                 filler_text = token.strip()
                 if filler_text:
-                    # Synthesize filler via Kokoro (same voice as main response)
                     t_filler_start = time.monotonic()
                     try:
-                        from cortex.voice.kokoro import KokoroClient
-                        kokoro_filler = KokoroClient(_KOKORO_HOST, _KOKORO_PORT, timeout=15.0)
-                        filler_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else _KOKORO_VOICE
-                        raw_filler, filler_info = await kokoro_filler.synthesize(
-                            filler_text, voice=filler_voice, response_format="wav",
-                        )
-                        # Extract PCM from WAV
-                        filler_audio = b""
-                        filler_rate = 24000
-                        if raw_filler and raw_filler[:4] == b"RIFF":
-                            import wave, io
-                            with wave.open(io.BytesIO(raw_filler), "rb") as wf:
-                                filler_rate = wf.getframerate()
-                                filler_audio = wf.readframes(wf.getnframes())
-                        elif raw_filler:
-                            filler_audio = raw_filler
-                            filler_rate = filler_info.get("rate", 24000)
+                        audio, rate, provider = await _synthesize_text(filler_text, tts_voice)
                         filler_ms = (time.monotonic() - t_filler_start) * 1000
-
-                        if filler_audio:
+                        if audio:
                             logger.info("Filler TTS for %s: %r (%.0fms, %d bytes)",
-                                        satellite_id, filler_text, filler_ms, len(filler_audio))
-
-                            # Stream filler to satellite immediately
-                            await conn.send({
-                                "type": "TTS_START",
-                                "session_id": conn.session_id,
-                                "format": f"pcm_{filler_rate // 1000}k_16bit_mono",
-                                "sample_rate": filler_rate,
-                                "text": filler_text,
-                                "is_filler": True,
-                            })
-                            chunk_size = 4096
-                            for offset in range(0, len(filler_audio), chunk_size):
-                                chunk = filler_audio[offset:offset + chunk_size]
-                                await conn.send({
-                                    "type": "TTS_CHUNK",
-                                    "session_id": conn.session_id,
-                                    "audio": base64.b64encode(chunk).decode("ascii"),
-                                })
-                            await conn.send({
-                                "type": "TTS_END",
-                                "session_id": conn.session_id,
-                                "is_filler": True,
-                            })
+                                        satellite_id, filler_text, filler_ms, len(audio))
+                            await _stream_audio_to_satellite(conn, audio, rate, filler_text, is_filler=True)
                     except Exception as e:
                         logger.warning("Filler TTS failed: %s", e)
                 continue
             response_parts.append(token)
+            token_buf += token
+
+            # Stream complete sentences as they arrive from the LLM.
+            # _STREAM_SENT_RE matches sentence-ending punctuation followed
+            # by whitespace, confirming the sentence is truly finished.
+            while True:
+                m = _STREAM_SENT_RE.search(token_buf)
+                if not m:
+                    break
+                sentence = token_buf[:m.end()].strip()
+                token_buf = token_buf[m.end():]
+                if len(sentence) < 20:
+                    # Too short — prepend to next sentence
+                    token_buf = sentence + " " + token_buf
+                    break
+                t_sent = time.monotonic()
+                audio, rate, provider = await _synthesize_text(sentence, tts_voice)
+                sent_ms = (time.monotonic() - t_sent) * 1000
+                if audio:
+                    logger.info("Sentence TTS [%s] %.0fms (%d bytes): %r",
+                                provider, sent_ms, len(audio), sentence[:60])
+                    await _stream_audio_to_satellite(conn, audio, rate, sentence, is_filler=True)
+                    sentences_sent += 1
+                    total_tts_bytes += len(audio)
+                    tts_used = provider
 
         full_response = "".join(response_parts).strip()
         t_llm_end = time.monotonic()
@@ -595,111 +657,50 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
 
         logger.info("Pipeline response for %s (LLM %.0fms): %r", satellite_id, llm_ms, full_response[:200])
 
-        # ── Step 3: TTS ──────────────────────────────────────────
-        # Kokoro primary: CPU, fast (~2-5s), high quality, 67 voices
-        # Piper fallback: CPU, very fast (<1s), decent quality
-        # Orpheus last resort: GPU, emotional but ~1s/word
-        t_tts_start = time.monotonic()
-        tts_used = "none"
-        total_tts_bytes = 0
-        tts_audio = b""
-        tts_rate = 24000
+        # ── Step 3: Final sentence + auto-listen ─────────────────
+        is_question = full_response.rstrip().endswith("?")
 
-        # Try Kokoro first (best quality + speed balance)
-        if _TTS_PROVIDER in ("kokoro", "auto"):
-            try:
-                from cortex.voice.kokoro import KokoroClient
-                kokoro = KokoroClient(_KOKORO_HOST, _KOKORO_PORT, timeout=30.0)
-                kokoro_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else _KOKORO_VOICE
-                raw_audio, audio_info = await kokoro.synthesize(
-                    full_response, voice=kokoro_voice, response_format="wav",
+        if token_buf.strip():
+            t_sent = time.monotonic()
+            audio, rate, provider = await _synthesize_text(token_buf.strip(), tts_voice)
+            sent_ms = (time.monotonic() - t_sent) * 1000
+            if audio:
+                logger.info("Final sentence TTS [%s] %.0fms (%d bytes): %r",
+                            provider, sent_ms, len(audio), token_buf.strip()[:60])
+                await _stream_audio_to_satellite(
+                    conn, audio, rate, token_buf.strip(),
+                    is_filler=False, auto_listen=is_question,
                 )
-                if raw_audio:
-                    # Extract PCM from WAV
-                    if raw_audio[:4] == b"RIFF":
-                        import wave, io
-                        with wave.open(io.BytesIO(raw_audio), "rb") as wf:
-                            tts_rate = wf.getframerate()
-                            tts_audio = wf.readframes(wf.getnframes())
-                    else:
-                        tts_audio = raw_audio
-                        tts_rate = audio_info.get("rate", 24000)
-                    tts_used = "kokoro"
-            except Exception as e:
-                logger.warning("Kokoro TTS failed: %s", e)
-
-        # Piper fallback (CPU, fast)
-        if not tts_audio:
-            try:
-                piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
-                piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
-                tts_audio, audio_info = await piper.synthesize(full_response, voice=piper_voice)
-                tts_rate = audio_info.get("rate", 22050)
-                tts_used = "piper"
-            except WyomingError as e:
-                logger.warning("Piper TTS failed: %s", e)
-
-        # Orpheus last resort (GPU, higher quality, very slow)
-        if not tts_audio:
-            orpheus = _get_orpheus_provider()
-            if orpheus:
-                try:
-                    orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
-                    orpheus_voice = tts_voice if tts_voice.replace("orpheus_", "") in orpheus_voices else "tara"
-                    chunks = []
-                    async for chunk in orpheus.synthesize(full_response, voice=orpheus_voice):
-                        chunks.append(chunk)
-                    tts_audio = b"".join(chunks)
-                    if tts_audio:
-                        if tts_audio[:4] == b"RIFF":
-                            import wave, io
-                            with wave.open(io.BytesIO(tts_audio), "rb") as wf:
-                                tts_rate = wf.getframerate()
-                                tts_audio = wf.readframes(wf.getnframes())
-                        else:
-                            tts_rate = 24000
-                        tts_used = "orpheus"
-                except Exception as e:
-                    logger.error("Orpheus TTS also failed: %s", e)
-
-        if not tts_audio:
-            logger.warning("All TTS failed for %s", satellite_id)
+                total_tts_bytes += len(audio)
+                tts_used = provider or tts_used
+                sentences_sent += 1
+        elif sentences_sent > 0:
+            # All text was already sent as intermediate sentences.
+            # Send a zero-length final TTS_END to signal completion.
+            msg: dict[str, Any] = {
+                "type": "TTS_END",
+                "session_id": conn.session_id,
+                "is_filler": False,
+            }
+            if is_question:
+                msg["auto_listen"] = True
+            await conn.send(msg)
+        else:
+            logger.warning("No sentences synthesized for %s", satellite_id)
             return
 
-        t_tts_end = time.monotonic()
-        tts_ms = (t_tts_end - t_tts_start) * 1000
-        total_tts_bytes = len(tts_audio)
-
-        logger.info("TTS [%s] %.0fms, %d bytes (%dHz) for %s",
-                     tts_used, tts_ms, total_tts_bytes, tts_rate, satellite_id)
-
-        # ── Step 4: Stream to satellite ──────────────────────────
-        await conn.send({
-            "type": "TTS_START",
-            "session_id": conn.session_id,
-            "format": f"pcm_{tts_rate // 1000}k_16bit_mono",
-            "sample_rate": tts_rate,
-            "text": full_response,
-        })
-
-        chunk_size = 4096
-        for offset in range(0, len(tts_audio), chunk_size):
-            chunk = tts_audio[offset:offset + chunk_size]
-            await conn.send({
-                "type": "TTS_CHUNK",
-                "session_id": conn.session_id,
-                "audio": base64.b64encode(chunk).decode("ascii"),
-            })
-
-        await conn.send({
-            "type": "TTS_END",
-            "session_id": conn.session_id,
-        })
+        # Auto-listen: if the response was a question, tell satellite to listen
+        if is_question:
+            try:
+                await conn.send({"type": "COMMAND", "action": "listen", "params": {}})
+                logger.info("Auto-listen sent to %s (response was a question)", satellite_id)
+            except Exception:
+                pass
 
         t_total = time.monotonic() - t_start
         logger.info(
-            "Pipeline complete for %s: total=%.1fs (STT=%.0fms LLM=%.0fms TTS=%.0fms [%s] %d bytes)",
-            satellite_id, t_total, stt_ms, llm_ms, tts_ms, tts_used, total_tts_bytes,
+            "Pipeline complete for %s: total=%.1fs (STT=%.0fms LLM=%.0fms %d sentences [%s] %d bytes)",
+            satellite_id, t_total, stt_ms, llm_ms, sentences_sent, tts_used, total_tts_bytes,
         )
 
     except WebSocketDisconnect:
