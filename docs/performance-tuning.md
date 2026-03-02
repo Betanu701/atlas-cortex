@@ -109,7 +109,33 @@ With Q4_K_M Orpheus using only 2.5 GB of the Intel Arc B580's 12 GB,
 Options under evaluation:
 - **OpenVINO backend** for faster-whisper (native Intel GPU support)
 - **CTranslate2 with Intel GPU** acceleration
-- **Whisper.cpp** with Vulkan backend (same approach as TTS)
+- **Whisper.cpp** with Vulkan backend ← **chosen, deployed**
+
+### Deployment: whisper.cpp Vulkan
+
+Using `ghcr.io/ggml-org/whisper.cpp:main-vulkan` with `large-v3-turbo-q5_0`:
+
+| Metric | CPU (faster-whisper) | GPU Vulkan (whisper.cpp) |
+|--------|---------------------|--------------------------|
+| Model | distil-large-v3 | large-v3-turbo-q5_0 |
+| Size | ~3 GB RAM | ~574 MB VRAM |
+| Cold inference | ~8-12s | ~2.4s |
+| Warm inference | ~3-5s | **~1.15s** |
+| Backend | CTranslate2 CPU | Vulkan Intel Arc |
+
+Whisper.cpp uses HTTP API at `/inference` (multipart POST), not Wyoming
+protocol. The cortex `whisper_cpp.py` client handles the conversion.
+
+### VRAM Budget (Intel Arc B580 = 12 GB)
+
+| Service | VRAM | Model |
+|---------|------|-------|
+| llama.cpp Orpheus TTS | 2.5 GB | Q4_K_M |
+| SNAC decoder (XPU) | 0.3 GB | — |
+| whisper.cpp STT | 0.6 GB | large-v3-turbo-q5_0 |
+| Compute buffers | 0.3 GB | — |
+| **Total used** | **~3.7 GB** | — |
+| **Free** | **~8.3 GB** | Available for future services |
 
 ---
 
