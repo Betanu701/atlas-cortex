@@ -83,15 +83,16 @@ class WakeWordDetector:
 
                 samples = np.frombuffer(audio_data, dtype=np.int16)
                 predictions = self._detector.predict(samples)
-                # If we have a specific model, use its prediction
-                if self._model_name and self._model_name in predictions:
-                    score = predictions[self._model_name]
-                else:
-                    score = max(predictions.values()) if predictions else 0.0
+                if not predictions:
+                    return 0.0
 
-                # Debug: log high-ish scores so we can tune threshold
-                if score > 0.05:
-                    logger.debug("Wake word score: %.4f %s", score, predictions)
+                # Match against custom model name or configured wake word
+                target = self._model_name or self.wake_word
+                if target and target in predictions:
+                    score = predictions[target]
+                else:
+                    score = max(predictions.values())
+
                 if score > 0.2:
                     logger.info("Wake word candidate: %.4f", score)
                 return score

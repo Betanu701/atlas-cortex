@@ -413,6 +413,9 @@ class ProvisioningEngine:
 
     async def _start_service(self, ssh: SSHConnection, user_service: bool = False) -> None:
         """Create systemd service and start it."""
+        # Set up ALSA mixer for ReSpeaker 2-Mic HAT (wm8960 codec)
+        await self._configure_alsa_mixer(ssh)
+
         if user_service:
             # User-level systemd service (shared mode)
             service = _SYSTEMD_USER_UNIT
@@ -426,6 +429,27 @@ class ProvisioningEngine:
             await ssh.run(f"sudo tee /etc/systemd/system/atlas-satellite.service > /dev/null << 'EOF'\n{service}\nEOF")
             await ssh.run("sudo systemctl daemon-reload")
             await ssh.run("sudo systemctl enable --now atlas-satellite")
+
+    async def _configure_alsa_mixer(self, ssh: SSHConnection) -> None:
+        """Configure ALSA mixer for ReSpeaker 2-Mic HAT (wm8960 codec).
+
+        Enables input boost and sets capture gain for wake word detection.
+        """
+        r = await ssh.run("amixer -c 0 info 2>&1")
+        if "wm8960" not in r.stdout.lower():
+            return
+        logger.info("Configuring WM8960 ALSA mixer for mic boost")
+        for cmd in [
+            "amixer -c 0 cset numid=1 55,55",    # Capture Volume (0-63)
+            "amixer -c 0 cset numid=3 on,on",     # Capture Switch
+            "amixer -c 0 cset numid=9 3",          # Left Boost LINPUT1 Vol (+29dB)
+            "amixer -c 0 cset numid=8 3",          # Right Boost RINPUT1 Vol
+            "amixer -c 0 cset numid=50 on",        # Left Input Mixer Boost
+            "amixer -c 0 cset numid=51 on",        # Right Input Mixer Boost
+            "amixer -c 0 cset numid=36 220,220",   # ADC PCM Capture Volume
+        ]:
+            await ssh.run(cmd + " 2>/dev/null")
+        await ssh.run("sudo alsactl store 2>/dev/null")
 
     # ── Server SSH key management ──────────────────────────────────
 
