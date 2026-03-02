@@ -108,6 +108,7 @@ class SatelliteConnection:
         self.session_id: str | None = None
         self.audio_buffer: bytearray = bytearray()
         self.audio_format: dict = {}
+        self.has_wake_word: bool = False  # True if satellite has local wake word detection
 
     async def send(self, message: dict) -> None:
         """Send a JSON message to the satellite."""
@@ -168,12 +169,14 @@ async def satellite_ws_handler(websocket: WebSocket) -> None:
 
         # Extract client IP and metadata from ANNOUNCE
         client_ip = websocket.client.host if websocket.client else None
+        capabilities = raw.get("capabilities") or []
+        conn.has_wake_word = "wake_word" in capabilities
         _update_satellite_status(
             satellite_id, "online",
             ip_address=client_ip,
             hostname=raw.get("hostname"),
             room=raw.get("room"),
-            capabilities=raw.get("capabilities"),
+            capabilities=capabilities,
             hardware_info=raw.get("hw_info"),
         )
 
@@ -446,6 +449,43 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
             return
 
         logger.info("STT result from %s (%.0fms): %r", satellite_id, stt_ms, transcript)
+
+        # Server-side wake word filter for satellites without local wake word.
+        # If the satellite has no openwakeword, VAD triggers on ANY speech.
+        # We check the transcript for the wake word before running the pipeline.
+        if not conn.has_wake_word:
+            wake_keywords = {"atlas", "atmos", "alice"}  # "atmos"/"alice" = common whisper mishears
+            transcript_lower = transcript.lower()
+            has_keyword = any(kw in transcript_lower for kw in wake_keywords)
+            if not has_keyword:
+                logger.info("No wake keyword in transcript from %s (no local wake word), dropping: %r",
+                            satellite_id, transcript[:80])
+                try:
+                    await conn.send({"type": "PIPELINE_ERROR", "detail": "No wake word detected"})
+                except Exception:
+                    pass
+                return
+            # Strip the wake word from the transcript so LLM gets clean input
+            for kw in sorted(wake_keywords, key=len, reverse=True):
+                idx = transcript_lower.find(kw)
+                if idx != -1:
+                    # Remove wake word and surrounding "hey", "ok", etc.
+                    prefix = transcript[:idx].strip().lower()
+                    clean_prefixes = {"hey", "ok", "okay", "hi", "yo", ""}
+                    if prefix in clean_prefixes:
+                        transcript = transcript[idx + len(kw):].strip()
+                    else:
+                        transcript = (transcript[:idx] + transcript[idx + len(kw):]).strip()
+                    break
+            # After stripping, if nothing left, ignore
+            if not transcript:
+                logger.info("Transcript empty after wake word removal from %s", satellite_id)
+                try:
+                    await conn.send({"type": "PIPELINE_ERROR", "detail": "Empty after wake word"})
+                except Exception:
+                    pass
+                return
+            logger.info("After wake word filter from %s: %r", satellite_id, transcript)
 
         # ── Step 2: Pipeline (filler-first streaming) ─────────────
         t_llm_start = time.monotonic()
