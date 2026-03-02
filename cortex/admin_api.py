@@ -8,9 +8,12 @@ All endpoints require a valid admin JWT (see :mod:`cortex.auth`).
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
