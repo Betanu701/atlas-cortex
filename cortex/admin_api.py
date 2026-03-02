@@ -1099,7 +1099,32 @@ async def preview_tts(body: dict, admin: dict = Depends(require_admin)):
     orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
     use_orpheus = voice and voice.replace("orpheus_", "") in orpheus_voices
 
-    if use_orpheus:
+    # Try Kokoro for Kokoro voices (af_*, am_*, bf_*, bm_*, jf_*, etc.)
+    kokoro_prefixes = ("af_", "am_", "bf_", "bm_", "ef_", "em_", "ff_", "gf_",
+                       "hf_", "if_", "jf_", "pf_", "zf_", "zm_")
+    use_kokoro = voice and voice.startswith(kokoro_prefixes) and not use_orpheus
+
+    if use_kokoro:
+        try:
+            from cortex.voice.kokoro import KokoroClient, KokoroError
+            kokoro_host = os.environ.get("KOKORO_HOST", "localhost")
+            kokoro_port = int(os.environ.get("KOKORO_PORT", "8880"))
+            client = KokoroClient(host=kokoro_host, port=kokoro_port)
+            wav_data, info = await client.synthesize(text, voice=voice, response_format="wav")
+            if wav_data and wav_data[:4] == b"RIFF":
+                with wave.open(io.BytesIO(wav_data), "rb") as wf:
+                    rate = wf.getframerate()
+                    width = wf.getsampwidth()
+                    channels = wf.getnchannels()
+                    audio_data = wf.readframes(wf.getnframes())
+            elif wav_data:
+                audio_data = wav_data
+                rate = info.get("rate", 24000)
+        except Exception as e:
+            logger.warning("Kokoro preview failed, falling back to Piper: %s", e)
+            audio_data = b""
+
+    if use_orpheus and not audio_data:
         try:
             from cortex.voice.providers import get_tts_provider, _env_config
             provider = get_tts_provider(_env_config())
