@@ -955,12 +955,29 @@ async def remove_satellite(satellite_id: str, admin: dict = Depends(require_admi
 
 @router.get("/tts/voices")
 async def list_tts_voices(admin: dict = Depends(require_admin)):
-    """List available TTS voices from Orpheus + Piper."""
+    """List available TTS voices from Kokoro + Orpheus + Piper."""
     import os
     from cortex.voice.wyoming import WyomingClient
     all_voices = []
 
-    # Orpheus voices (primary)
+    # Kokoro voices (primary)
+    try:
+        from cortex.voice.kokoro import KokoroClient
+        host = os.environ.get("KOKORO_HOST", "localhost")
+        port = int(os.environ.get("KOKORO_PORT", "8880"))
+        kokoro = KokoroClient(host, port, timeout=5.0)
+        kokoro_voices = await kokoro.list_voices()
+        for v in kokoro_voices:
+            all_voices.append({
+                "name": v,
+                "provider": "kokoro",
+                "description": v,
+                "installed": True,
+            })
+    except Exception:
+        pass
+
+    # Orpheus voices
     try:
         from cortex.voice.providers.orpheus import _ORPHEUS_VOICES
         for v in _ORPHEUS_VOICES:
@@ -985,7 +1002,51 @@ async def list_tts_voices(admin: dict = Depends(require_admin)):
     except Exception:
         pass
 
-    return {"voices": all_voices}
+    # Include system default voice
+    db = get_db()
+    row = db.execute("SELECT value FROM system_settings WHERE key = 'default_tts_voice'").fetchone()
+    system_default = row["value"] if row else ""
+
+    return {"voices": all_voices, "system_default": system_default}
+
+
+@router.get("/settings")
+async def get_system_settings(admin: dict = Depends(require_admin)):
+    """Get all system settings."""
+    db = get_db()
+    rows = db.execute("SELECT key, value FROM system_settings").fetchall()
+    return {row["key"]: row["value"] for row in rows}
+
+
+@router.put("/settings/{key}")
+async def set_system_setting(key: str, body: dict, admin: dict = Depends(require_admin)):
+    """Set a system setting. Body: {\"value\": \"...\"}"""
+    value = body.get("value", "")
+    db = get_db()
+    db.execute(
+        "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+        (key, value),
+    )
+    db.commit()
+    return {"key": key, "value": value}
+
+
+@router.put("/tts/default_voice")
+async def set_default_voice(body: dict, admin: dict = Depends(require_admin)):
+    """Set the system-wide default TTS voice. Body: {\"voice\": \"af_bella\"}"""
+    voice = body.get("voice", "")
+    if not voice:
+        return {"error": "voice is required"}, 400
+
+    db = get_db()
+    db.execute(
+        "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('default_tts_voice', ?, CURRENT_TIMESTAMP)",
+        (voice,),
+    )
+    db.commit()
+
+    logger.info("System default TTS voice set to: %s", voice)
+    return {"default_voice": voice}
 
 
 @router.post("/tts/preview")

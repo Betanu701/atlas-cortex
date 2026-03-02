@@ -57,6 +57,29 @@ def _get_satellite_voice(satellite_id: str) -> str:
         return ""
 
 
+def _get_system_default_voice() -> str:
+    """Read the system-wide default TTS voice from settings."""
+    try:
+        db = get_db()
+        row = db.execute(
+            "SELECT value FROM system_settings WHERE key = 'default_tts_voice'"
+        ).fetchone()
+        return row["value"] if row else ""
+    except Exception:
+        return ""
+
+
+def _resolve_voice(satellite_id: str) -> str:
+    """Resolve the effective TTS voice: satellite override → system default → env default."""
+    voice = _get_satellite_voice(satellite_id)
+    if voice:
+        return voice
+    voice = _get_system_default_voice()
+    if voice:
+        return voice
+    return _KOKORO_VOICE
+
+
 def _get_orpheus_provider():
     """Return the Orpheus TTS provider if configured, else None."""
     try:
@@ -444,47 +467,61 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         filler_text = ""
         response_parts: list[str] = []
         first_token = True
-        tts_voice = _get_satellite_voice(satellite_id)
+        tts_voice = _resolve_voice(satellite_id)
 
         async for token in pipeline_gen:
             if first_token:
                 first_token = False
                 filler_text = token.strip()
                 if filler_text:
-                    # Synthesize filler via Piper (CPU, ~200ms) and stream immediately
+                    # Synthesize filler via Kokoro (same voice as main response)
                     t_filler_start = time.monotonic()
                     try:
-                        piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=10.0)
-                        piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
-                        filler_audio, filler_info = await piper.synthesize(filler_text, voice=piper_voice)
-                        filler_rate = filler_info.get("rate", 22050)
+                        from cortex.voice.kokoro import KokoroClient
+                        kokoro_filler = KokoroClient(_KOKORO_HOST, _KOKORO_PORT, timeout=15.0)
+                        filler_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else _KOKORO_VOICE
+                        raw_filler, filler_info = await kokoro_filler.synthesize(
+                            filler_text, voice=filler_voice, response_format="wav",
+                        )
+                        # Extract PCM from WAV
+                        filler_audio = b""
+                        filler_rate = 24000
+                        if raw_filler and raw_filler[:4] == b"RIFF":
+                            import wave, io
+                            with wave.open(io.BytesIO(raw_filler), "rb") as wf:
+                                filler_rate = wf.getframerate()
+                                filler_audio = wf.readframes(wf.getnframes())
+                        elif raw_filler:
+                            filler_audio = raw_filler
+                            filler_rate = filler_info.get("rate", 24000)
                         filler_ms = (time.monotonic() - t_filler_start) * 1000
 
-                        logger.info("Filler TTS for %s: %r (%.0fms, %d bytes)",
-                                    satellite_id, filler_text, filler_ms, len(filler_audio))
+                        if filler_audio:
+                            logger.info("Filler TTS for %s: %r (%.0fms, %d bytes)",
+                                        satellite_id, filler_text, filler_ms, len(filler_audio))
 
-                        # Stream filler to satellite immediately
-                        await conn.send({
-                            "type": "TTS_START",
-                            "session_id": conn.session_id,
-                            "format": f"pcm_{filler_rate // 1000}k_16bit_mono",
-                            "sample_rate": filler_rate,
-                            "text": filler_text,
-                            "is_filler": True,
-                        })
-                        chunk_size = 4096
-                        for offset in range(0, len(filler_audio), chunk_size):
-                            chunk = filler_audio[offset:offset + chunk_size]
+                            # Stream filler to satellite immediately
                             await conn.send({
-                                "type": "TTS_CHUNK",
+                                "type": "TTS_START",
                                 "session_id": conn.session_id,
-                                "audio": base64.b64encode(chunk).decode("ascii"),
+                                "format": f"pcm_{filler_rate // 1000}k_16bit_mono",
+                                "sample_rate": filler_rate,
+                                "text": filler_text,
+                                "is_filler": True,
                             })
-                        await conn.send({
-                            "type": "TTS_END",
-                            "session_id": conn.session_id,
-                            "is_filler": True,
-                        })
+                            chunk_size = 4096
+                            for offset in range(0, len(filler_audio), chunk_size):
+                                chunk = filler_audio[offset:offset + chunk_size]
+                                await conn.send({
+                                    "type": "TTS_CHUNK",
+                                    "session_id": conn.session_id,
+                                    "audio": base64.b64encode(chunk).decode("ascii"),
+                                })
+                            await conn.send({
+                                "type": "TTS_END",
+                                "session_id": conn.session_id,
+                                "is_filler": True,
+                            })
                     except Exception as e:
                         logger.warning("Filler TTS failed: %s", e)
                 continue

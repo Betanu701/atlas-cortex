@@ -605,6 +605,13 @@ CREATE TABLE IF NOT EXISTS tts_voices (
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ── System Settings (key-value) ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS system_settings (
+    key           TEXT PRIMARY KEY,
+    value         TEXT NOT NULL,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ── Hardware / GPU ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS hardware_gpu (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
