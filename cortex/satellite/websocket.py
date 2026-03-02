@@ -38,6 +38,12 @@ _STT_PORT = int(os.environ.get("STT_PORT", "10300"))
 _PIPER_HOST = os.environ.get("PIPER_HOST", os.environ.get("TTS_HOST", "localhost"))
 _PIPER_PORT = int(os.environ.get("PIPER_PORT", os.environ.get("TTS_PORT", "10200")))
 
+# Kokoro TTS configuration
+_KOKORO_HOST = os.environ.get("KOKORO_HOST", "localhost")
+_KOKORO_PORT = int(os.environ.get("KOKORO_PORT", "8880"))
+_KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "af_bella")
+_TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "kokoro")
+
 
 def _get_satellite_voice(satellite_id: str) -> str:
     """Read the configured TTS voice for a satellite from DB."""
@@ -495,25 +501,50 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         logger.info("Pipeline response for %s (LLM %.0fms): %r", satellite_id, llm_ms, full_response[:200])
 
         # ── Step 3: TTS ──────────────────────────────────────────
-        # Piper primary: CPU, very fast (~200ms for typical response)
-        # Orpheus fallback: GPU, higher quality but ~1s/word currently
+        # Kokoro primary: CPU, fast (~2-5s), high quality, 67 voices
+        # Piper fallback: CPU, very fast (<1s), decent quality
+        # Orpheus last resort: GPU, emotional but ~1s/word
         t_tts_start = time.monotonic()
         tts_used = "none"
         total_tts_bytes = 0
         tts_audio = b""
-        tts_rate = 22050
+        tts_rate = 24000
 
-        # Use Piper for fast TTS (always available, CPU)
-        try:
-            piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
-            piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
-            tts_audio, audio_info = await piper.synthesize(full_response, voice=piper_voice)
-            tts_rate = audio_info.get("rate", 22050)
-            tts_used = "piper"
-        except WyomingError as e:
-            logger.warning("Piper TTS failed: %s", e)
+        # Try Kokoro first (best quality + speed balance)
+        if _TTS_PROVIDER in ("kokoro", "auto"):
+            try:
+                from cortex.voice.kokoro import KokoroClient
+                kokoro = KokoroClient(_KOKORO_HOST, _KOKORO_PORT, timeout=30.0)
+                kokoro_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else _KOKORO_VOICE
+                raw_audio, audio_info = await kokoro.synthesize(
+                    full_response, voice=kokoro_voice, response_format="wav",
+                )
+                if raw_audio:
+                    # Extract PCM from WAV
+                    if raw_audio[:4] == b"RIFF":
+                        import wave, io
+                        with wave.open(io.BytesIO(raw_audio), "rb") as wf:
+                            tts_rate = wf.getframerate()
+                            tts_audio = wf.readframes(wf.getnframes())
+                    else:
+                        tts_audio = raw_audio
+                        tts_rate = audio_info.get("rate", 24000)
+                    tts_used = "kokoro"
+            except Exception as e:
+                logger.warning("Kokoro TTS failed: %s", e)
 
-        # Orpheus fallback (GPU, higher quality voice, slower)
+        # Piper fallback (CPU, fast)
+        if not tts_audio:
+            try:
+                piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
+                piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
+                tts_audio, audio_info = await piper.synthesize(full_response, voice=piper_voice)
+                tts_rate = audio_info.get("rate", 22050)
+                tts_used = "piper"
+            except WyomingError as e:
+                logger.warning("Piper TTS failed: %s", e)
+
+        # Orpheus last resort (GPU, higher quality, very slow)
         if not tts_audio:
             orpheus = _get_orpheus_provider()
             if orpheus:

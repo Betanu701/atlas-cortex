@@ -21,8 +21,11 @@ services:
       - MODEL_FAST=${MODEL_FAST:-qwen2.5:7b}
       - MODEL_THINKING=${MODEL_THINKING:-qwen3:30b-a3b}
       - MODEL_EMBEDDING=${MODEL_EMBEDDING:-nomic-embed-text}
-      # TTS — Orpheus primary via FastAPI (port 5005), Piper fallback (port 10200)
-      - TTS_PROVIDER=${TTS_PROVIDER:-orpheus}
+      # TTS — Kokoro primary (port 8880), Piper fallback (port 10200), Orpheus optional (port 5005)
+      - TTS_PROVIDER=${TTS_PROVIDER:-kokoro}
+      - KOKORO_HOST=${KOKORO_HOST:-localhost}
+      - KOKORO_PORT=${KOKORO_PORT:-8880}
+      - KOKORO_VOICE=${KOKORO_VOICE:-af_bella}
       - ORPHEUS_FASTAPI_URL=${ORPHEUS_FASTAPI_URL:-http://localhost:5005}
       - PIPER_HOST=${PIPER_HOST:-localhost}
       - PIPER_PORT=${PIPER_PORT:-10200}
@@ -69,6 +72,25 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # ── Kokoro TTS — OpenAI-compatible API (port 8880) ──────────────
+  # Non-autoregressive 82M-param model: sub-second to ~5s synthesis
+  # on CPU. Much faster than autoregressive Orpheus for real-time use.
+  # 67 built-in voice packs, natural sounding.
+  atlas-kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: atlas-kokoro
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    networks:
+      - atlas
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8880/v1/audio/voices > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   # ── Whisper.cpp STT — HTTP API (port 10300) ──────────────────────
   # Speech-to-text via whisper.cpp with Vulkan GPU acceleration.
