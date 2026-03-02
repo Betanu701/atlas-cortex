@@ -355,7 +355,9 @@ class SatelliteAgent:
 
     async def _on_tts_end(self, msg: dict) -> None:
         """TTS stream complete — play the buffered audio."""
-        logger.info("TTS_END received (%d bytes buffered, rate=%d)", len(self._tts_buffer), self._tts_sample_rate)
+        is_filler = msg.get("is_filler", False)
+        logger.info("TTS_END received (%d bytes buffered, rate=%d, filler=%s)",
+                     len(self._tts_buffer), self._tts_sample_rate, is_filler)
         self.state = State.SPEAKING
         self.led.set_pattern("speaking")
 
@@ -367,6 +369,12 @@ class SatelliteAgent:
 
         # Suppress echo: ignore VAD for 1.5s after playback ends
         self._echo_suppress_until = time.monotonic() + 1.5
+
+        # Fillers: stay in PROCESSING — more audio coming
+        if is_filler:
+            self.state = State.PROCESSING
+            self.led.set_pattern("processing")
+            return
 
         # Return to idle
         self.state = State.IDLE

@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import os
+import re
 import struct
 import time
 import uuid
@@ -283,6 +284,17 @@ async def _handle_audio_end(conn: SatelliteConnection, msg: dict) -> None:
         logger.debug("Audio too short (%d bytes), ignoring", len(audio_data))
         return
 
+    # Cap audio at ~15 seconds (480000 bytes at 16kHz 16-bit mono) to prevent
+    # VAD runaway and whisper hallucination on very long recordings.
+    MAX_AUDIO_BYTES = 480000  # 15 seconds
+    if len(audio_data) > MAX_AUDIO_BYTES:
+        logger.warning(
+            "Audio from %s too long (%d bytes / %.1fs), truncating to last %.0fs",
+            conn.satellite_id, len(audio_data),
+            len(audio_data) / 32000, MAX_AUDIO_BYTES / 32000,
+        )
+        audio_data = audio_data[-MAX_AUDIO_BYTES:]
+
     # Run the voice pipeline in a background task so websocket stays responsive
     asyncio.create_task(_process_voice_pipeline(conn, audio_data))
 
@@ -296,14 +308,71 @@ async def _handle_status(conn: SatelliteConnection, msg: dict) -> None:
 # ── Voice pipeline ────────────────────────────────────────────────
 
 
+def _is_hallucinated(transcript: str) -> bool:
+    """Detect whisper hallucination patterns (repeated phrases, noise)."""
+    words = transcript.split()
+    if len(words) < 3:
+        return False
+    # Check for repeated short phrases (e.g. "Okay. Okay. Okay.")
+    segments = [s.strip() for s in transcript.replace("\n", " ").split(".") if s.strip()]
+    if len(segments) >= 4:
+        unique = set(s.lower() for s in segments)
+        if len(unique) <= 2:
+            return True
+    # Common whisper hallucinations on silence
+    lower = transcript.lower().strip()
+    hallucination_patterns = [
+        "thank you for watching",
+        "thanks for watching",
+        "please subscribe",
+        "you",
+        "...",
+    ]
+    if lower in hallucination_patterns:
+        return True
+    return False
+
+
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences at punctuation boundaries.
+
+    Keeps short fragments together to avoid tiny TTS calls.
+    Minimum sentence length ~20 chars before splitting.
+    """
+    raw = _SENTENCE_RE.split(text.strip())
+    if not raw:
+        return [text.strip()] if text.strip() else []
+
+    sentences: list[str] = []
+    buf = ""
+    for part in raw:
+        buf = (buf + " " + part).strip() if buf else part
+        if len(buf) >= 20:
+            sentences.append(buf)
+            buf = ""
+    if buf:
+        if sentences:
+            sentences[-1] = sentences[-1] + " " + buf
+        else:
+            sentences.append(buf)
+    return sentences
+
+
 async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) -> None:
     """Full STT → Pipeline → TTS → stream back to satellite."""
 
     satellite_id = conn.satellite_id
+    t_start = time.monotonic()
 
     try:
         # ── Step 1: STT ──────────────────────────────────────────
-        logger.info("Running STT on %d bytes from %s (backend=%s)", len(audio_data), satellite_id, _STT_BACKEND)
+        t_stt_start = time.monotonic()
+        logger.info("Running STT on %d bytes (%.1fs audio) from %s (backend=%s)",
+                     len(audio_data), len(audio_data) / 32000,
+                     satellite_id, _STT_BACKEND)
 
         try:
             if _STT_BACKEND == "whisper_cpp":
@@ -323,122 +392,204 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
             return
 
         transcript = transcript.strip()
+        t_stt_end = time.monotonic()
+        stt_ms = (t_stt_end - t_stt_start) * 1000
+
         if not transcript:
-            logger.info("Empty transcript from %s, ignoring", satellite_id)
+            logger.info("Empty transcript from %s (STT took %.0fms), ignoring", satellite_id, stt_ms)
             try:
                 await conn.send({"type": "PIPELINE_ERROR", "detail": "Empty transcript"})
             except Exception:
                 pass
             return
 
-        logger.info("STT result from %s: %r", satellite_id, transcript)
+        # Guard against whisper hallucination (repeated noise patterns)
+        if _is_hallucinated(transcript):
+            logger.warning("Hallucinated transcript from %s (%.0fms): %r — dropping",
+                           satellite_id, stt_ms, transcript[:100])
+            try:
+                await conn.send({"type": "PIPELINE_ERROR", "detail": "No clear speech detected"})
+            except Exception:
+                pass
+            return
 
-        # ── Step 2: Pipeline ─────────────────────────────────────
+        logger.info("STT result from %s (%.0fms): %r", satellite_id, stt_ms, transcript)
+
+        # ── Step 2: Pipeline (filler-first streaming) ─────────────
+        t_llm_start = time.monotonic()
         from cortex.providers import get_provider
         from cortex.pipeline import run_pipeline
 
         provider = get_provider()
 
-        # Collect full response text from pipeline
-        response_parts: list[str] = []
         pipeline_gen = await run_pipeline(
             message=transcript,
             provider=provider,
             satellite_id=satellite_id,
             model_fast="qwen2.5:7b",
         )
+
+        # Layer 3 yields filler text first, then LLM tokens.
+        # Synthesize and stream the filler immediately via Piper (fast, <300ms)
+        # while continuing to collect LLM tokens.
+        filler_text = ""
+        response_parts: list[str] = []
+        first_token = True
+        tts_voice = _get_satellite_voice(satellite_id)
+
         async for token in pipeline_gen:
+            if first_token:
+                first_token = False
+                filler_text = token.strip()
+                if filler_text:
+                    # Synthesize filler via Piper (CPU, ~200ms) and stream immediately
+                    t_filler_start = time.monotonic()
+                    try:
+                        piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=10.0)
+                        piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
+                        filler_audio, filler_info = await piper.synthesize(filler_text, voice=piper_voice)
+                        filler_rate = filler_info.get("rate", 22050)
+                        filler_ms = (time.monotonic() - t_filler_start) * 1000
+
+                        logger.info("Filler TTS for %s: %r (%.0fms, %d bytes)",
+                                    satellite_id, filler_text, filler_ms, len(filler_audio))
+
+                        # Stream filler to satellite immediately
+                        await conn.send({
+                            "type": "TTS_START",
+                            "session_id": conn.session_id,
+                            "format": f"pcm_{filler_rate // 1000}k_16bit_mono",
+                            "sample_rate": filler_rate,
+                            "text": filler_text,
+                            "is_filler": True,
+                        })
+                        chunk_size = 4096
+                        for offset in range(0, len(filler_audio), chunk_size):
+                            chunk = filler_audio[offset:offset + chunk_size]
+                            await conn.send({
+                                "type": "TTS_CHUNK",
+                                "session_id": conn.session_id,
+                                "audio": base64.b64encode(chunk).decode("ascii"),
+                            })
+                        await conn.send({
+                            "type": "TTS_END",
+                            "session_id": conn.session_id,
+                            "is_filler": True,
+                        })
+                    except Exception as e:
+                        logger.warning("Filler TTS failed: %s", e)
+                continue
             response_parts.append(token)
 
         full_response = "".join(response_parts).strip()
+        t_llm_end = time.monotonic()
+        llm_ms = (t_llm_end - t_llm_start) * 1000
+
         if not full_response:
-            logger.warning("Empty pipeline response for %r", transcript)
+            logger.warning("Empty pipeline response for %r (LLM took %.0fms)", transcript, llm_ms)
             return
 
-        logger.info("Pipeline response for %s: %r", satellite_id, full_response[:200])
+        logger.info("Pipeline response for %s (LLM %.0fms): %r", satellite_id, llm_ms, full_response[:200])
 
-        # ── Step 3: TTS (Orpheus primary → Piper fallback) ────────
-        tts_voice = _get_satellite_voice(satellite_id)
-        tts_audio = b""
-        tts_rate = 22050
+        # ── Step 3: TTS — sentence-boundary streaming ─────────────
+        # Split response into sentences and synthesize each one, streaming
+        # audio as soon as each sentence is ready.
+        t_tts_start = time.monotonic()
         tts_used = "none"
+        total_tts_bytes = 0
 
-        # Try Orpheus first (GPU-accelerated, emotional speech)
-        orpheus = _get_orpheus_provider()
-        if orpheus:
-            try:
-                orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
-                orpheus_voice = tts_voice if tts_voice.replace("orpheus_", "") in orpheus_voices else "tara"
-                chunks = []
-                async for chunk in orpheus.synthesize(full_response, voice=orpheus_voice):
-                    chunks.append(chunk)
-                tts_audio = b"".join(chunks)
-                if tts_audio:
-                    # Check if WAV (from FastAPI), extract raw PCM
-                    if tts_audio[:4] == b"RIFF":
-                        import wave, io
-                        with wave.open(io.BytesIO(tts_audio), "rb") as wf:
-                            tts_rate = wf.getframerate()
-                            tts_audio = wf.readframes(wf.getnframes())
-                    else:
-                        # Raw PCM from SNAC decoder — always 24kHz
-                        tts_rate = 24000
-                    tts_used = "orpheus"
-                    logger.info("Orpheus TTS: %d bytes for %s", len(tts_audio), satellite_id)
-            except Exception as e:
-                logger.warning("Orpheus TTS failed, falling back to Piper: %s", e)
-                tts_audio = b""
-
-        # Piper fallback (CPU, fast, always available)
-        if not tts_audio:
-            try:
-                piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
-                piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
-                tts_audio, audio_info = await piper.synthesize(full_response, voice=piper_voice)
-                tts_rate = audio_info.get("rate", 22050)
-                tts_used = "piper"
-                logger.info("Piper TTS: %d bytes (%dHz) for %s", len(tts_audio), tts_rate, satellite_id)
-            except WyomingError as e:
-                logger.error("TTS failed (both Orpheus and Piper) for %s: %s", satellite_id, e)
-                return
-
-        if not tts_audio:
-            logger.warning("Empty TTS audio for %s", satellite_id)
+        # Split into sentences for incremental TTS
+        sentences = _split_sentences(full_response)
+        if not sentences:
+            logger.warning("No sentences to synthesize for %s", satellite_id)
             return
 
-        logger.info(
-            "TTS [%s] produced %d bytes (%dHz) for %s",
-            tts_used, len(tts_audio), tts_rate, satellite_id,
-        )
+        orpheus = _get_orpheus_provider()
+        tts_started = False
 
-        # ── Step 4: Stream back to satellite ─────────────────────
-        playback_audio = tts_audio
-        playback_rate = tts_rate
+        for i, sentence in enumerate(sentences):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
 
-        await conn.send({
-            "type": "TTS_START",
-            "session_id": conn.session_id,
-            "format": f"pcm_{playback_rate // 1000}k_16bit_mono",
-            "sample_rate": playback_rate,
-            "text": full_response,
-        })
+            tts_audio = b""
+            tts_rate = 22050
 
-        # Send in chunks (~4KB each)
-        chunk_size = 4096
-        for offset in range(0, len(playback_audio), chunk_size):
-            chunk = playback_audio[offset:offset + chunk_size]
+            # Try Orpheus first
+            if orpheus:
+                try:
+                    orpheus_voices = {"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
+                    orpheus_voice = tts_voice if tts_voice.replace("orpheus_", "") in orpheus_voices else "tara"
+                    chunks = []
+                    async for chunk in orpheus.synthesize(sentence, voice=orpheus_voice):
+                        chunks.append(chunk)
+                    tts_audio = b"".join(chunks)
+                    if tts_audio:
+                        if tts_audio[:4] == b"RIFF":
+                            import wave, io
+                            with wave.open(io.BytesIO(tts_audio), "rb") as wf:
+                                tts_rate = wf.getframerate()
+                                tts_audio = wf.readframes(wf.getnframes())
+                        else:
+                            tts_rate = 24000
+                        tts_used = "orpheus"
+                except Exception as e:
+                    if i == 0:
+                        logger.warning("Orpheus TTS failed, falling back to Piper: %s", e)
+                    tts_audio = b""
+
+            # Piper fallback
+            if not tts_audio:
+                try:
+                    piper = WyomingClient(_PIPER_HOST, _PIPER_PORT, timeout=30.0)
+                    piper_voice = tts_voice if tts_voice and not tts_voice.startswith("orpheus_") else None
+                    tts_audio, audio_info = await piper.synthesize(sentence, voice=piper_voice)
+                    tts_rate = audio_info.get("rate", 22050)
+                    tts_used = "piper"
+                except WyomingError as e:
+                    logger.error("TTS failed for sentence %d/%d: %s", i + 1, len(sentences), e)
+                    continue
+
+            if not tts_audio:
+                continue
+
+            # Send TTS_START on first real sentence
+            if not tts_started:
+                await conn.send({
+                    "type": "TTS_START",
+                    "session_id": conn.session_id,
+                    "format": f"pcm_{tts_rate // 1000}k_16bit_mono",
+                    "sample_rate": tts_rate,
+                    "text": full_response,
+                })
+                tts_started = True
+
+            # Stream this sentence's audio
+            chunk_size = 4096
+            for offset in range(0, len(tts_audio), chunk_size):
+                chunk = tts_audio[offset:offset + chunk_size]
+                await conn.send({
+                    "type": "TTS_CHUNK",
+                    "session_id": conn.session_id,
+                    "audio": base64.b64encode(chunk).decode("ascii"),
+                })
+            total_tts_bytes += len(tts_audio)
+
+        if tts_started:
             await conn.send({
-                "type": "TTS_CHUNK",
+                "type": "TTS_END",
                 "session_id": conn.session_id,
-                "audio": base64.b64encode(chunk).decode("ascii"),
             })
 
-        await conn.send({
-            "type": "TTS_END",
-            "session_id": conn.session_id,
-        })
+        t_tts_end = time.monotonic()
+        tts_ms = (t_tts_end - t_tts_start) * 1000
 
-        logger.info("Streamed TTS to %s (%d bytes)", satellite_id, len(playback_audio))
+        t_total = time.monotonic() - t_start
+        logger.info(
+            "Pipeline complete for %s: total=%.1fs (STT=%.0fms LLM=%.0fms TTS=%.0fms [%s] %d sentences %d bytes)",
+            satellite_id, t_total, stt_ms, llm_ms, tts_ms,
+            tts_used, len(sentences), total_tts_bytes,
+        )
 
     except WebSocketDisconnect:
         logger.warning("Satellite %s disconnected during pipeline", satellite_id)
