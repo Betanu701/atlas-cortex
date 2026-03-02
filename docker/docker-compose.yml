@@ -26,7 +26,8 @@ services:
       - ORPHEUS_FASTAPI_URL=${ORPHEUS_FASTAPI_URL:-http://localhost:5005}
       - PIPER_HOST=${PIPER_HOST:-localhost}
       - PIPER_PORT=${PIPER_PORT:-10200}
-      # STT — Faster-Whisper (port 10300)
+      # STT — whisper.cpp Vulkan (port 10300)
+      - STT_BACKEND=${STT_BACKEND:-whisper_cpp}
       - STT_HOST=${STT_HOST:-localhost}
       - STT_PORT=${STT_PORT:-10300}
       - CORTEX_DATA_DIR=/data
@@ -88,7 +89,7 @@ services:
     entrypoint: ["/app/build/bin/whisper-server"]
     command:
       - -m
-      - /models/ggml-${WHISPER_MODEL:-large-v3-turbo}.bin
+      - /models/ggml-${WHISPER_MODEL:-large-v3-turbo-q5_0}.bin
       - -l
       - ${WHISPER_LANG:-en}
       - -bs
@@ -117,19 +118,21 @@ services:
     restart: "no"
     volumes:
       - atlas-whisper-data:/models
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3-turbo-q5_0}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        MODEL="ggml-$${WHISPER_MODEL:-large-v3-turbo}.bin"
+        MODEL="ggml-$${WHISPER_MODEL}.bin"
         if [ -f "/models/$$MODEL" ]; then
           echo "Model $$MODEL already exists, skipping download"
           exit 0
         fi
         echo "Downloading whisper model: $$MODEL"
         apk add --no-cache curl
-        curl -L -o "/models/$$MODEL" \
+        curl -L --retry 3 -o "/models/$$MODEL" \
           "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$$MODEL"
-        echo "Download complete: $$MODEL ($(du -h /models/$$MODEL | cut -f1))"
+        echo "Download complete: $$MODEL ($$(du -h /models/$$MODEL | cut -f1))"
     networks:
       - atlas
 
