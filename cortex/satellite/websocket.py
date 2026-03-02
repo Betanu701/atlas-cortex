@@ -367,6 +367,9 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
     satellite_id = conn.satellite_id
     t_start = time.monotonic()
 
+    # Always import Wyoming for Piper TTS (filler + fallback)
+    from cortex.voice.wyoming import WyomingClient, WyomingError
+
     try:
         # ── Step 1: STT ──────────────────────────────────────────
         t_stt_start = time.monotonic()
