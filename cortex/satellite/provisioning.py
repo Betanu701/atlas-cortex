@@ -72,7 +72,8 @@ class ProvisionConfig:
     service_port: int = 5110
     server_url: str = ""  # ws://server:5100/ws/satellite
     features: dict = field(default_factory=dict)
-    wake_word: str = "hey atlas"
+    wake_word: str = "atlas"
+    wake_word_enabled: bool = True  # auto-detected: enabled on 64-bit, disabled on 32-bit
     volume: float = 0.7
     mic_gain: float = 0.8
 
@@ -150,15 +151,23 @@ class ProvisioningEngine:
             await self._install_system_deps(ssh)
             self._update_step(config.satellite_id, steps[4], "done")
 
+            # Detect architecture for wake word support
+            arch = await self._detect_arch(ssh)
+            is_64bit = arch in ("aarch64", "x86_64")
+
             # Step 6: Install satellite agent
             self._update_step(config.satellite_id, steps[5], "running")
-            await self._install_agent(ssh)
+            await self._install_agent(ssh, is_64bit=is_64bit)
             self._update_step(config.satellite_id, steps[5], "done")
 
             # Step 7: Write config
             self._update_step(config.satellite_id, steps[6], "running")
-            await self._write_config(ssh, config)
+            await self._write_config(ssh, config, is_64bit=is_64bit)
             self._update_step(config.satellite_id, steps[6], "done")
+
+            # Step 7b: Deploy wake word model (if 64-bit)
+            if is_64bit:
+                await self._deploy_wake_word_model(ssh, config.mode == "dedicated")
 
             # Step 8: Start service
             self._update_step(config.satellite_id, steps[7], "running")
@@ -211,15 +220,23 @@ class ProvisioningEngine:
             )
             self._update_step(config.satellite_id, steps[0], "done")
 
+            # Detect architecture for wake word support
+            arch = await self._detect_arch(ssh)
+            is_64bit = arch in ("aarch64", "x86_64")
+
             # Step 2: Install agent (as user, not system-wide)
             self._update_step(config.satellite_id, steps[1], "running")
-            await self._install_agent(ssh, system_wide=False)
+            await self._install_agent(ssh, system_wide=False, is_64bit=is_64bit)
             self._update_step(config.satellite_id, steps[1], "done")
 
             # Step 3: Write config
             self._update_step(config.satellite_id, steps[2], "running")
-            await self._write_config(ssh, config)
+            await self._write_config(ssh, config, is_64bit=is_64bit)
             self._update_step(config.satellite_id, steps[2], "done")
+
+            # Deploy wake word model if 64-bit
+            if is_64bit:
+                await self._deploy_wake_word_model(ssh, system_wide=False)
 
             # Step 4: Start service
             self._update_step(config.satellite_id, steps[3], "running")
@@ -286,7 +303,15 @@ class ProvisioningEngine:
             "> /dev/null 2>&1"
         )
 
-    async def _install_agent(self, ssh: SSHConnection, system_wide: bool = True) -> None:
+    async def _detect_arch(self, ssh: SSHConnection) -> str:
+        """Detect satellite CPU architecture (aarch64 = 64-bit, armv7l = 32-bit)."""
+        result = await ssh.run("uname -m")
+        arch = result.stdout.strip() if result.stdout else "unknown"
+        logger.info("Satellite architecture: %s", arch)
+        return arch
+
+    async def _install_agent(self, ssh: SSHConnection, system_wide: bool = True,
+                             is_64bit: bool = False) -> None:
         """Install the Atlas satellite agent."""
         if system_wide:
             install_dir = "/opt/atlas-satellite"
@@ -299,6 +324,15 @@ class ProvisioningEngine:
                 f"sudo {install_dir}/.venv/bin/pip install -q -r {install_dir}/requirements.txt 2>/dev/null; "
                 f"sudo rm -rf /tmp/atlas-cortex"
             )
+            # Install openwakeword on 64-bit systems
+            if is_64bit:
+                logger.info("64-bit detected — installing openwakeword dependencies")
+                await ssh.run(
+                    f"sudo {install_dir}/.venv/bin/pip install -q "
+                    "openwakeword numpy 2>/dev/null"
+                )
+                # Create models directory and deploy custom wake word model
+                await ssh.run(f"sudo mkdir -p {install_dir}/models")
         else:
             install_dir = "$HOME/.atlas-satellite"
             await ssh.run(f"mkdir -p {install_dir}")
@@ -310,13 +344,27 @@ class ProvisioningEngine:
                 f"{install_dir}/.venv/bin/pip install -q -r {install_dir}/requirements.txt 2>/dev/null; "
                 f"rm -rf /tmp/atlas-cortex"
             )
+            if is_64bit:
+                logger.info("64-bit detected — installing openwakeword dependencies")
+                await ssh.run(
+                    f"{install_dir}/.venv/bin/pip install -q "
+                    "openwakeword numpy 2>/dev/null"
+                )
+                await ssh.run(f"mkdir -p {install_dir}/models")
 
-    async def _write_config(self, ssh: SSHConnection, config: ProvisionConfig) -> None:
+    async def _write_config(self, ssh: SSHConnection, config: ProvisionConfig,
+                            is_64bit: bool = False) -> None:
         """Write satellite configuration file."""
         if config.mode == "dedicated":
             config_dir = "/opt/atlas-satellite"
         else:
             config_dir = "$HOME/.atlas-satellite"
+
+        # Enable wake word on 64-bit systems (openwakeword installed)
+        wake_word_enabled = is_64bit and config.wake_word_enabled
+        wake_word_model = ""
+        if wake_word_enabled:
+            wake_word_model = f"{config_dir}/models/atlas.onnx"
 
         sat_config = {
             "satellite_id": config.satellite_id,
@@ -331,7 +379,9 @@ class ProvisioningEngine:
             "audio_device_in": config.features.get("audio_device_in", "default"),
             "audio_device_out": config.features.get("audio_device_out", "default"),
             "led_type": config.features.get("led_type", "none"),
-            "wake_word_enabled": False,
+            "wake_word_enabled": wake_word_enabled,
+            "wake_word_model": wake_word_model,
+            "wake_word_threshold": 0.5,
             "filler_enabled": True,
             "features": config.features,
         }
@@ -341,6 +391,25 @@ class ProvisioningEngine:
             await ssh.run(f"sudo tee {config_dir}/config.json > /dev/null << 'EOF'\n{config_json}\nEOF")
         else:
             await ssh.run(f"cat > {config_dir}/config.json << 'EOF'\n{config_json}\nEOF")
+
+    async def _deploy_wake_word_model(self, ssh: SSHConnection, system_wide: bool = True) -> None:
+        """Deploy the custom atlas wake word model to the satellite."""
+        model_src = Path(os.environ.get("CORTEX_DATA_DIR", "./data")) / "models" / "atlas.onnx"
+        if not model_src.exists():
+            logger.warning("Wake word model not found at %s — satellite will use server-side filter", model_src)
+            return
+
+        if system_wide:
+            dest = "/opt/atlas-satellite/models/atlas.onnx"
+        else:
+            dest = "$HOME/.atlas-satellite/models/atlas.onnx"
+
+        # Read model and write via SSH
+        model_bytes = model_src.read_bytes()
+        import base64
+        b64 = base64.b64encode(model_bytes).decode()
+        await ssh.run(f"echo '{b64}' | base64 -d > {dest}")
+        logger.info("Deployed wake word model (%d bytes) to %s", len(model_bytes), dest)
 
     async def _start_service(self, ssh: SSHConnection, user_service: bool = False) -> None:
         """Create systemd service and start it."""
