@@ -294,6 +294,7 @@ class SatelliteAgent:
             confidence = self.wake_word.process(audio)
             if confidence >= self.config.wake_word_threshold:
                 logger.info("Wake word detected (confidence: %.2f)", confidence)
+                self.wake_word.reset()  # Clear buffers to prevent re-trigger
                 await self._transition_to_listening(confidence)
         elif self.config.vad_enabled:
             # VAD-only mode: speech_start triggers listening
@@ -367,8 +368,13 @@ class SatelliteAgent:
             )
             self._tts_buffer.clear()
 
-        # Suppress echo: ignore VAD for 1.5s after playback ends
-        self._echo_suppress_until = time.monotonic() + 1.5
+        # Suppress echo: ignore VAD/wake for 3s after playback ends
+        self._echo_suppress_until = time.monotonic() + 3.0
+
+        # Reset wake word model to clear internal audio buffers
+        # (prevents TTS playback from triggering false wake detections)
+        if self.wake_word:
+            self.wake_word.reset()
 
         # Fillers: stay in PROCESSING — more audio coming
         if is_filler:

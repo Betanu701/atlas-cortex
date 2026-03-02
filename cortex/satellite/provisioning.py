@@ -76,6 +76,7 @@ class ProvisionConfig:
     wake_word_enabled: bool = True  # auto-detected: enabled on 64-bit, disabled on 32-bit
     volume: float = 0.7
     mic_gain: float = 0.8
+    audio_output: str = "headphone"  # "headphone", "speaker", or ALSA device name
 
 
 @dataclass
@@ -366,6 +367,15 @@ class ProvisioningEngine:
         if wake_word_enabled:
             wake_word_model = f"{config_dir}/models/atlas.onnx"
 
+        # Resolve audio output device
+        audio_device_out = config.features.get("audio_device_out", "default")
+        if audio_device_out == "default" and config.audio_output in ("headphone", "speaker"):
+            # ReSpeaker uses the same wm8960 device for both headphone and speaker
+            audio_device_out = "plughw:CARD=wm8960soundcard,DEV=0"
+        audio_device_in = config.features.get("audio_device_in", "default")
+        if audio_device_in == "default":
+            audio_device_in = "plughw:CARD=wm8960soundcard,DEV=0"
+
         sat_config = {
             "satellite_id": config.satellite_id,
             "server_url": config.server_url,
@@ -376,8 +386,8 @@ class ProvisioningEngine:
             "volume": config.volume,
             "mic_gain": config.mic_gain,
             "vad_sensitivity": 2,
-            "audio_device_in": config.features.get("audio_device_in", "default"),
-            "audio_device_out": config.features.get("audio_device_out", "default"),
+            "audio_device_in": audio_device_in,
+            "audio_device_out": audio_device_out,
             "led_type": config.features.get("led_type", "none"),
             "wake_word_enabled": wake_word_enabled,
             "wake_word_model": wake_word_model,
@@ -440,6 +450,7 @@ class ProvisioningEngine:
             return
         logger.info("Configuring WM8960 ALSA mixer for mic boost")
         for cmd in [
+            # --- Input (mic) ---
             "amixer -c 0 cset numid=1 55,55",    # Capture Volume (0-63)
             "amixer -c 0 cset numid=3 on,on",     # Capture Switch
             "amixer -c 0 cset numid=9 3",          # Left Boost LINPUT1 Vol (+29dB)
@@ -447,6 +458,12 @@ class ProvisioningEngine:
             "amixer -c 0 cset numid=50 on",        # Left Input Mixer Boost
             "amixer -c 0 cset numid=51 on",        # Right Input Mixer Boost
             "amixer -c 0 cset numid=36 220,220",   # ADC PCM Capture Volume
+            # --- Output (DAC → headphone/speaker) ---
+            "amixer -c 0 cset numid=52 on",        # Left Output Mixer PCM Playback
+            "amixer -c 0 cset numid=55 on",        # Right Output Mixer PCM Playback
+            "amixer -c 0 cset numid=11 110,110",   # Headphone Volume (0-127)
+            "amixer -c 0 cset numid=13 110,110",   # Speaker Volume (0-127)
+            "amixer -c 0 cset numid=10 230,230",   # DAC Playback Volume (0-255)
         ]:
             await ssh.run(cmd + " 2>/dev/null")
         await ssh.run("sudo alsactl store 2>/dev/null")
