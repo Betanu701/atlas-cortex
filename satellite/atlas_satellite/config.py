@@ -48,15 +48,15 @@ class SatelliteConfig:
     filler_enabled: bool = True
 
     # Silence detection
-    silence_threshold_frames: int = 15  # ~450ms at 30ms/frame
+    silence_threshold_frames: int = 20  # ~600ms at 30ms/frame
     speech_threshold_frames: int = 3  # ~90ms to confirm speech start
     max_speech_frames: int = 333  # ~10s max recording
 
     # Energy-based VAD gating (RMS threshold for 16-bit PCM)
     vad_energy_threshold: float = 80.0
-    vad_window_size: int = 30  # sliding window frames
-    vad_silence_ratio: float = 0.65  # ratio of silence in window to trigger end
-    vad_speech_energy_ratio: float = 1.6  # RMS must exceed ambient * this to be speech
+    vad_window_size: int = 40  # sliding window frames
+    vad_silence_ratio: float = 0.70  # ratio of silence in window to trigger end
+    vad_speech_energy_ratio: float = 2.2  # RMS must exceed ambient * this to be speech
 
     # LED master brightness (0.0-1.0, scales all pattern brightnesses)
     led_brightness: float = 1.0

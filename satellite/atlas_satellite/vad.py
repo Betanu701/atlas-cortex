@@ -53,13 +53,13 @@ class VoiceActivityDetector:
         sample_rate: int = 16000,
         frame_ms: int = 30,
         speech_threshold: int = 3,
-        silence_threshold: int = 15,
+        silence_threshold: int = 20,
         max_speech_frames: int = 333,
         energy_threshold: float = 80.0,
-        window_size: int = 30,
-        silence_ratio: float = 0.65,
-        speech_energy_ratio: float = 1.6,
-        ambient_alpha: float = 0.05,
+        window_size: int = 40,
+        silence_ratio: float = 0.70,
+        speech_energy_ratio: float = 2.2,
+        ambient_alpha: float = 0.03,
     ):
         self.sample_rate = sample_rate
         self.frame_ms = frame_ms
@@ -191,7 +191,7 @@ class VoiceActivityDetector:
                     n_silence = sum(1 for v in self._window if not v)
                     ratio = n_silence / len(self._window)
                     if ratio >= self.silence_ratio:
-                        logger.info(
+                        logger.debug(
                             "Speech end (window: %.0f%% silence in %d frames)",
                             100 * ratio, len(self._window),
                         )

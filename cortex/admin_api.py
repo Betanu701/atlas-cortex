@@ -738,6 +738,7 @@ class SatelliteUpdateRequest(BaseModel):
     tts_voice: str | None = None
     vad_enabled: bool | None = None
     led_brightness: float | None = None
+    audio_device_out: str | None = None
 
 
 @router.get("/satellites")
