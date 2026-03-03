@@ -7,6 +7,7 @@ interaction logging.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, AsyncGenerator
 
@@ -28,8 +29,8 @@ async def run_pipeline(
     satellite_id: str | None = None,
     conversation_history: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
-    model_fast: str = "qwen2.5:14b",
-    model_thinking: str = "qwen3:30b-a3b",
+    model_fast: str = os.environ.get("MODEL_FAST", "qwen2.5:14b"),
+    model_thinking: str = os.environ.get("MODEL_THINKING", "qwen3:30b-a3b"),
     system_prompt: str = "",
     memory_context: str = "",
     db_conn: Any = None,

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, AsyncGenerator
 
 from cortex.filler import select_filler
@@ -39,8 +40,8 @@ _FAST_KEYWORDS = frozenset([
 def select_model(
     message: str,
     conversation_length: int = 0,
-    model_fast: str = "qwen2.5:14b",
-    model_thinking: str = "qwen3:30b-a3b",
+    model_fast: str = os.environ.get("MODEL_FAST", "qwen2.5:14b"),
+    model_thinking: str = os.environ.get("MODEL_THINKING", "qwen3:30b-a3b"),
 ) -> str:
     """Rule-based model selection.
 
@@ -122,8 +123,8 @@ async def stream_llm_response(
     message: str,
     context: dict[str, Any],
     provider: LLMProvider,
-    model_fast: str = "qwen2.5:14b",
-    model_thinking: str = "qwen3:30b-a3b",
+    model_fast: str = os.environ.get("MODEL_FAST", "qwen2.5:14b"),
+    model_thinking: str = os.environ.get("MODEL_THINKING", "qwen3:30b-a3b"),
     memory_context: str = "",
     system_prompt: str = "",
     confidence: float = 1.0,
