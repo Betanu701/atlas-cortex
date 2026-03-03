@@ -1,10 +1,11 @@
-"""Voice Activity Detection using webrtcvad with energy gating.
+"""Voice Activity Detection with adaptive energy baseline.
 
-Lightweight C-based VAD — adds ~1MB memory. Supports 8/16/32/48kHz
-with 10/20/30ms frames.
-
-Uses energy-based pre-filtering and a sliding window for robust
-silence detection on noisy microphones (e.g. ReSpeaker HAT).
+The ReSpeaker 2-mic HAT has a high noise floor that saturates
+webrtcvad at every aggressiveness level.  This module uses an
+adaptive energy baseline: speech is detected when RMS rises
+significantly above the rolling ambient average, and silence is
+detected when it returns to baseline.  webrtcvad is used only as
+a secondary signal when the noise floor is low enough.
 """
 
 from __future__ import annotations
@@ -32,16 +33,18 @@ def _rms(audio_data: bytes) -> float:
 
 
 class VoiceActivityDetector:
-    """Detects speech boundaries in audio frames.
+    """Detects speech boundaries using adaptive energy thresholding.
 
-    Improvements over pure webrtcvad consecutive-frame counting:
-    1. Energy gate: frames below ``energy_threshold`` RMS are forced to
-       silence regardless of webrtcvad's opinion.  Prevents mic noise
-       from being classified as speech.
-    2. Sliding window: instead of requiring N *consecutive* silence
-       frames, we track the last ``window_size`` frames.  If the silence
-       ratio in the window exceeds ``silence_ratio``, we trigger
-       speech_end.  This handles intermittent noise spikes during pauses.
+    On noisy microphones (e.g. ReSpeaker HAT) where webrtcvad classifies
+    everything as speech, we fall back to energy-based detection:
+
+    1. Maintain a rolling baseline of ambient RMS (``_ambient_rms``).
+    2. A frame is "speech" if its RMS exceeds ``_ambient_rms * speech_energy_ratio``.
+    3. Silence detection uses a sliding window: if the fraction of
+       non-speech frames in the last ``window_size`` frames exceeds
+       ``silence_ratio``, trigger speech_end.
+    4. The ambient baseline only updates during non-speech periods to
+       avoid tracking the speaker's voice as "ambient".
     """
 
     def __init__(
@@ -55,17 +58,20 @@ class VoiceActivityDetector:
         energy_threshold: float = 80.0,
         window_size: int = 30,
         silence_ratio: float = 0.65,
+        speech_energy_ratio: float = 1.6,
+        ambient_alpha: float = 0.05,
     ):
         self.sample_rate = sample_rate
         self.frame_ms = frame_ms
-        self.frame_bytes = int(sample_rate * frame_ms / 1000) * 2  # 16-bit
+        self.frame_bytes = int(sample_rate * frame_ms / 1000) * 2
         self.speech_threshold = speech_threshold
         self.silence_threshold = silence_threshold
-        # Max recording ~10s at 30ms/frame = 333 frames
         self.max_speech_frames = max_speech_frames
         self.energy_threshold = energy_threshold
         self.window_size = window_size
         self.silence_ratio = silence_ratio
+        self.speech_energy_ratio = speech_energy_ratio
+        self.ambient_alpha = ambient_alpha
 
         self._vad = None
         if webrtcvad is not None:
@@ -75,16 +81,55 @@ class VoiceActivityDetector:
         self._silence_count = 0
         self._in_speech = False
         self._speech_frame_total = 0
-        # Sliding window: True = speech, False = silence
         self._window: collections.deque[bool] = collections.deque(maxlen=window_size)
 
+        # Adaptive energy baseline
+        self._ambient_rms: float = 0.0
+        self._calibrated = False
+        self._calibration_frames: list[float] = []
+        self._calibration_target = 20  # ~600ms at 30ms/frame
+        self._use_energy_mode = False
+        self._frame_count = 0
+
+    def _calibrate(self, rms: float) -> None:
+        """Collect initial frames to establish ambient baseline."""
+        self._calibration_frames.append(rms)
+        if len(self._calibration_frames) >= self._calibration_target:
+            self._ambient_rms = sum(self._calibration_frames) / len(self._calibration_frames)
+            self._calibrated = True
+
+            # If ambient RMS is high, webrtcvad is useless — use energy mode
+            if self._ambient_rms > 500:
+                self._use_energy_mode = True
+                logger.info(
+                    "High noise floor (ambient RMS=%.0f) — using energy-based VAD",
+                    self._ambient_rms,
+                )
+            else:
+                logger.info(
+                    "Low noise floor (ambient RMS=%.0f) — using webrtcvad+energy",
+                    self._ambient_rms,
+                )
+
     def is_speech(self, audio_data: bytes) -> bool:
-        """Check if a single frame contains speech (with energy gate)."""
+        """Check if a single frame contains speech."""
+        rms = _rms(audio_data)
+        self._frame_count += 1
+
+        if not self._calibrated:
+            self._calibrate(rms)
+            return False
+
+        if self._use_energy_mode:
+            # Energy-only mode: speech if RMS significantly above ambient
+            threshold = self._ambient_rms * self.speech_energy_ratio
+            return rms > threshold
+
+        # Hybrid mode: energy gate + webrtcvad
+        if rms < self.energy_threshold:
+            return False
         if self._vad is None:
-            return False
-        # Energy gate: below threshold → silence, skip webrtcvad
-        if _rms(audio_data) < self.energy_threshold:
-            return False
+            return rms > self._ambient_rms * self.speech_energy_ratio
         try:
             return self._vad.is_speech(audio_data, self.sample_rate)
         except Exception:
@@ -94,15 +139,17 @@ class VoiceActivityDetector:
         """Process a frame and return state.
 
         Returns: 'speech_start', 'speech', 'speech_end', or 'silence'.
-
-        State machine:
-          silence → speech_start (after speech_threshold consecutive speech frames)
-          speech → speech_end (sliding window: silence_ratio exceeded OR
-                               consecutive silence_threshold frames)
-          speech → speech_end (after max_speech_frames total speech frames)
         """
+        rms = _rms(audio_data)
         frame_is_speech = self.is_speech(audio_data)
         self._window.append(frame_is_speech)
+
+        # Update ambient baseline only when NOT in speech
+        if self._calibrated and not self._in_speech and not frame_is_speech:
+            self._ambient_rms = (
+                self._ambient_rms * (1 - self.ambient_alpha)
+                + rms * self.ambient_alpha
+            )
 
         if frame_is_speech:
             self._speech_count += 1
@@ -111,12 +158,18 @@ class VoiceActivityDetector:
             if not self._in_speech and self._speech_count >= self.speech_threshold:
                 self._in_speech = True
                 self._speech_frame_total = self._speech_count
+                logger.debug(
+                    "Speech start (RMS=%.0f, ambient=%.0f, ratio=%.1f)",
+                    rms, self._ambient_rms, rms / max(self._ambient_rms, 1),
+                )
                 return "speech_start"
             elif self._in_speech:
                 self._speech_frame_total += 1
                 if self._speech_frame_total >= self.max_speech_frames:
-                    logger.warning("Max speech duration reached (%d frames), forcing end",
-                                   self._speech_frame_total)
+                    logger.warning(
+                        "Max speech duration reached (%d frames), forcing end",
+                        self._speech_frame_total,
+                    )
                     self._reset_state()
                     return "speech_end"
                 return "speech"
@@ -125,18 +178,22 @@ class VoiceActivityDetector:
             self._speech_count = 0
 
             if self._in_speech:
-                # Method 1: consecutive silence (original)
+                # Consecutive silence
                 if self._silence_count >= self.silence_threshold:
+                    logger.debug(
+                        "Speech end (consecutive silence, %d frames)",
+                        self._silence_count,
+                    )
                     self._reset_state()
                     return "speech_end"
-                # Method 2: sliding window ratio
+                # Sliding window
                 if len(self._window) >= self.window_size:
                     n_silence = sum(1 for v in self._window if not v)
-                    if n_silence / len(self._window) >= self.silence_ratio:
+                    ratio = n_silence / len(self._window)
+                    if ratio >= self.silence_ratio:
                         logger.info(
-                            "Silence via window ratio (%.0f%% in %d frames)",
-                            100 * n_silence / len(self._window),
-                            len(self._window),
+                            "Speech end (window: %.0f%% silence in %d frames)",
+                            100 * ratio, len(self._window),
                         )
                         self._reset_state()
                         return "speech_end"
@@ -150,10 +207,10 @@ class VoiceActivityDetector:
         self._silence_count = 0
 
     def reset(self) -> None:
-        """Reset speech/silence counters and window."""
+        """Reset speech/silence counters and window (keeps calibration)."""
         self._reset_state()
         self._window.clear()
 
     @property
     def active(self) -> bool:
-        return self._vad is not None
+        return self._vad is not None or self._calibrated

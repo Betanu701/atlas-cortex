@@ -174,6 +174,7 @@ class SatelliteAgent:
             energy_threshold=cfg.vad_energy_threshold,
             window_size=cfg.vad_window_size,
             silence_ratio=cfg.vad_silence_ratio,
+            speech_energy_ratio=cfg.vad_speech_energy_ratio,
         )
 
         # Wake word (optional)
@@ -294,6 +295,9 @@ class SatelliteAgent:
             return  # Suppress echo after TTS playback
 
         if self.wake_word:
+            # Feed VAD in idle to maintain ambient calibration
+            if self.vad and self.vad.active:
+                self.vad.process(audio)
             # Wake word mode
             confidence = self.wake_word.process(audio)
             if confidence >= self.config.wake_word_threshold:

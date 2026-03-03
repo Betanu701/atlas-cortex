@@ -56,6 +56,7 @@ class SatelliteConfig:
     vad_energy_threshold: float = 80.0
     vad_window_size: int = 30  # sliding window frames
     vad_silence_ratio: float = 0.65  # ratio of silence in window to trigger end
+    vad_speech_energy_ratio: float = 1.6  # RMS must exceed ambient * this to be speech
 
     # LED master brightness (0.0-1.0, scales all pattern brightnesses)
     led_brightness: float = 1.0
