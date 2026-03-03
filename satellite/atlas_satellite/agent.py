@@ -170,6 +170,10 @@ class SatelliteAgent:
             frame_ms=cfg.chunk_ms,
             speech_threshold=cfg.speech_threshold_frames,
             silence_threshold=cfg.silence_threshold_frames,
+            max_speech_frames=cfg.max_speech_frames,
+            energy_threshold=cfg.vad_energy_threshold,
+            window_size=cfg.vad_window_size,
+            silence_ratio=cfg.vad_silence_ratio,
         )
 
         # Wake word (optional)

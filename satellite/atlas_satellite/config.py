@@ -25,7 +25,7 @@ class SatelliteConfig:
     wake_word: str = "hey atlas"
     volume: float = 0.7
     mic_gain: float = 0.8
-    vad_sensitivity: int = 2  # 0-3, webrtcvad aggressiveness
+    vad_sensitivity: int = 1  # 0-3, webrtcvad aggressiveness (1=best for noisy mics)
     sample_rate: int = 16000
     channels: int = 1
     chunk_ms: int = 30  # 30ms chunks for webrtcvad
@@ -50,6 +50,12 @@ class SatelliteConfig:
     # Silence detection
     silence_threshold_frames: int = 15  # ~450ms at 30ms/frame
     speech_threshold_frames: int = 3  # ~90ms to confirm speech start
+    max_speech_frames: int = 333  # ~10s max recording
+
+    # Energy-based VAD gating (RMS threshold for 16-bit PCM)
+    vad_energy_threshold: float = 80.0
+    vad_window_size: int = 30  # sliding window frames
+    vad_silence_ratio: float = 0.65  # ratio of silence in window to trigger end
 
     # LED master brightness (0.0-1.0, scales all pattern brightnesses)
     led_brightness: float = 1.0
