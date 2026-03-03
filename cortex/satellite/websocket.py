@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import struct
 import time
@@ -659,27 +660,62 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         sentences_sent = 0
         total_tts_bytes = 0
         tts_used = "none"
+        _filler_task: asyncio.Task | None = None
+        _secondary_filler_task: asyncio.Task | None = None
+
+        # Secondary filler phrases for long LLM waits
+        _SECONDARY_FILLERS = [
+            "Almost there.",
+            "Still working on it.",
+            "Bear with me.",
+            "One more moment.",
+        ]
 
         async for token in pipeline_gen:
             if first_token:
                 first_token = False
                 filler_text = token.strip()
                 if filler_text:
-                    # Brief pause before filler — mimics natural thinking
-                    await asyncio.sleep(0.35)
-                    t_filler_start = time.monotonic()
-                    try:
-                        audio, rate, provider = await _synthesize_text(filler_text, tts_voice)
-                        filler_ms = (time.monotonic() - t_filler_start) * 1000
-                        if audio:
-                            logger.info("Filler TTS for %s: %r (%.0fms, %d bytes)",
-                                        satellite_id, filler_text, filler_ms, len(audio))
-                            await _stream_audio_to_satellite(conn, audio, rate, filler_text, is_filler=True)
-                            tts_used = provider
-                            total_tts_bytes += len(audio)
-                    except Exception as e:
-                        logger.warning("Filler TTS failed: %s", e)
+                    # Run filler TTS in background so the LLM starts immediately
+                    # instead of waiting for filler synthesis to finish.
+                    async def _do_filler(text: str = filler_text) -> None:
+                        await asyncio.sleep(0.35)  # natural thinking pause
+                        try:
+                            audio, rate, prov = await _synthesize_text(text, tts_voice)
+                            if audio:
+                                logger.info("Filler TTS for %s: %r (%.0fms, %d bytes)",
+                                            satellite_id, text,
+                                            (time.monotonic() - t_llm_start) * 1000, len(audio))
+                                await _stream_audio_to_satellite(
+                                    conn, audio, rate, text, is_filler=True)
+                        except Exception as e:
+                            logger.warning("Filler TTS failed: %s", e)
+
+                    _filler_task = asyncio.create_task(_do_filler())
+
+                    # Secondary filler: if LLM takes too long, bridge the gap
+                    async def _do_secondary_filler() -> None:
+                        await asyncio.sleep(4.0)  # fire 4s after pipeline start
+                        phrase = random.choice(_SECONDARY_FILLERS)
+                        try:
+                            audio, rate, prov = await _synthesize_text(phrase, tts_voice)
+                            if audio:
+                                logger.info("Secondary filler for %s: %r (%d bytes)",
+                                            satellite_id, phrase, len(audio))
+                                await _stream_audio_to_satellite(
+                                    conn, audio, rate, phrase, is_filler=True)
+                        except Exception as e:
+                            logger.warning("Secondary filler TTS failed: %s", e)
+
+                    _secondary_filler_task = asyncio.create_task(
+                        _do_secondary_filler())
                 continue
+
+            # Cancel secondary filler if LLM tokens are flowing
+            if _secondary_filler_task and not _secondary_filler_task.done():
+                _secondary_filler_task.cancel()
+                _secondary_filler_task = None
+
             response_parts.append(token)
             token_buf += token
 
@@ -710,6 +746,12 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         full_response = "".join(response_parts).strip()
         t_llm_end = time.monotonic()
         llm_ms = (t_llm_end - t_llm_start) * 1000
+
+        # Ensure background filler tasks are done before sending final response
+        if _filler_task and not _filler_task.done():
+            await _filler_task
+        if _secondary_filler_task and not _secondary_filler_task.done():
+            _secondary_filler_task.cancel()
 
         if not full_response:
             if filler_text:
