@@ -19,23 +19,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 
 logger = logging.getLogger(__name__)
 
-_HAS_GPIO = False
+_HAS_GPIOD = False
 try:
-    import RPi.GPIO as GPIO
-    _HAS_GPIO = True
+    import gpiod
+    from gpiod.line import Bias, Edge
+    _HAS_GPIOD = True
 except ImportError:
-    GPIO = None  # type: ignore[assignment]
+    gpiod = None  # type: ignore[assignment]
 
 BUTTON_PIN = 17  # BCM pin number on ReSpeaker 2-mic HAT
-DEBOUNCE_MS = 200  # Debounce time to prevent double triggers
+DEBOUNCE_S = 0.2  # Debounce time to prevent double triggers
 
 
 class ButtonHandler:
-    """Handles ReSpeaker button GPIO events."""
+    """Handles ReSpeaker button GPIO events via libgpiod."""
 
     def __init__(self, mode: str = "toggle") -> None:
         self.mode = mode  # toggle | press | hold
@@ -46,6 +48,9 @@ class ButtonHandler:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._last_event = 0.0
         self._active = False
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._request = None
 
     def register(
         self,
@@ -60,46 +65,68 @@ class ButtonHandler:
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """Start listening for button events on GPIO 17."""
-        if not _HAS_GPIO:
-            logger.warning("RPi.GPIO not available — button disabled")
+        if not _HAS_GPIOD:
+            logger.warning("gpiod not available — button disabled")
             return
 
         self._loop = loop
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            GPIO.add_event_detect(
-                BUTTON_PIN, GPIO.BOTH,
-                callback=self._gpio_callback,
-                bouncetime=DEBOUNCE_MS,
+            self._request = gpiod.request_lines(
+                "/dev/gpiochip0",
+                consumer="atlas-button",
+                config={BUTTON_PIN: gpiod.LineSettings(
+                    edge_detection=Edge.BOTH,
+                    bias=Bias.PULL_UP,
+                )},
             )
             self._active = True
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._poll_loop, daemon=True, name="gpio-button",
+            )
+            self._thread.start()
             logger.info("Button handler started (GPIO %d, mode=%s)", BUTTON_PIN, self.mode)
         except Exception as e:
             logger.warning("Failed to set up button GPIO: %s", e)
 
     def stop(self) -> None:
         """Clean up GPIO resources."""
-        if not _HAS_GPIO or not self._active:
-            return
-        try:
-            GPIO.remove_event_detect(BUTTON_PIN)
-            GPIO.cleanup(BUTTON_PIN)
-        except Exception:
-            pass
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+        if self._request:
+            try:
+                self._request.release()
+            except Exception:
+                pass
+            self._request = None
         self._active = False
 
-    def _gpio_callback(self, channel: int) -> None:
-        """GPIO interrupt callback — runs in GPIO thread, schedules async."""
+    def _poll_loop(self) -> None:
+        """Background thread polling for GPIO edge events."""
+        while not self._stop_event.is_set():
+            try:
+                if not self._request or not self._request.wait_edge_events(timeout=0.5):
+                    continue
+                events = self._request.read_edge_events()
+                for ev in events:
+                    self._handle_edge(ev)
+            except Exception:
+                if not self._stop_event.is_set():
+                    time.sleep(0.1)
+
+    def _handle_edge(self, event) -> None:
+        """Handle a single edge event from gpiod."""
         now = time.monotonic()
-        if now - self._last_event < DEBOUNCE_MS / 1000:
+        if now - self._last_event < DEBOUNCE_S:
             return
         self._last_event = now
 
         if not self._loop:
             return
 
-        pressed = GPIO.input(BUTTON_PIN) == 0  # Active LOW
+        # FALLING = pressed (active LOW), RISING = released
+        pressed = event.event_type == event.Type.FALLING_EDGE
 
         if self.mode == "toggle":
             if pressed:  # Only act on press-down
