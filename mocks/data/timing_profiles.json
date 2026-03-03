@@ -96,5 +96,28 @@
     "per_word_ms": 180,
     "audio_per_word_ms": 130,
     "note": "Derived from Kokoro TTS on Intel Arc B580 GPU"
+  },
+  "voice_pipeline": {
+    "sample_count": 34,
+    "stt_ms": {
+      "min": 176.0,
+      "avg": 190,
+      "max": 251.0
+    },
+    "llm_ms": {
+      "min": 1768.0,
+      "avg": 4371,
+      "max": 6672.0
+    },
+    "time_to_first_tts_ms": {
+      "min": 2259.2743629938923,
+      "avg": 4620,
+      "max": 5190.919654996833
+    },
+    "total_e2e_ms": {
+      "min": 6517.686906998279,
+      "avg": 8567,
+      "max": 11291.104695003014
+    }
   }
 }
