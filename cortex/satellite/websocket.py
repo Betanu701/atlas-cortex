@@ -665,6 +665,8 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
                 first_token = False
                 filler_text = token.strip()
                 if filler_text:
+                    # Brief pause before filler — mimics natural thinking
+                    await asyncio.sleep(0.35)
                     t_filler_start = time.monotonic()
                     try:
                         audio, rate, provider = await _synthesize_text(filler_text, tts_voice)
