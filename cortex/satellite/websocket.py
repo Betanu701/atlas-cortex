@@ -592,9 +592,10 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
             model_fast="qwen2.5:7b",
         )
 
-        # Layer 3 yields filler text first, then LLM tokens.
-        # Sentence-level streaming: synthesize and send each sentence
-        # as it completes from the LLM, eliminating dead-air gaps.
+        # The pipeline yields tokens: Layer 1/2 yield a single complete answer,
+        # while Layer 3 yields a filler phrase first, then LLM tokens.
+        # We consume the first token optimistically as filler, then if no more
+        # tokens arrive, we recognize it was the complete answer.
         filler_text = ""
         first_token = True
         tts_voice = _resolve_voice(satellite_id)
@@ -617,6 +618,8 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
                             logger.info("Filler TTS for %s: %r (%.0fms, %d bytes)",
                                         satellite_id, filler_text, filler_ms, len(audio))
                             await _stream_audio_to_satellite(conn, audio, rate, filler_text, is_filler=True)
+                            tts_used = provider
+                            total_tts_bytes += len(audio)
                     except Exception as e:
                         logger.warning("Filler TTS failed: %s", e)
                 continue
@@ -652,6 +655,25 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         llm_ms = (t_llm_end - t_llm_start) * 1000
 
         if not full_response:
+            if filler_text:
+                # Layer 1/2 returned a single-token answer that was sent as
+                # filler.  That filler IS the answer — just send TTS_END to
+                # return the satellite to IDLE.
+                logger.info("Instant answer for %s (%.0fms): %r",
+                            satellite_id, llm_ms, filler_text[:120])
+                is_question = filler_text.rstrip().endswith("?")
+                msg: dict[str, Any] = {
+                    "type": "TTS_END",
+                    "session_id": conn.session_id,
+                    "is_filler": False,
+                }
+                if is_question:
+                    msg["auto_listen"] = True
+                await conn.send(msg)
+                t_total = time.monotonic() - t_stt_start
+                logger.info("Pipeline complete for %s: total=%.1fs (STT=%.0fms instant [%s] %d bytes)",
+                            satellite_id, t_total, stt_ms, tts_used, total_tts_bytes)
+                return
             logger.warning("Empty pipeline response for %r (LLM took %.0fms)", transcript, llm_ms)
             return
 
