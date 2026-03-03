@@ -73,6 +73,7 @@ class SatelliteAgent:
         self._tts_sample_rate = 22050
         self._server_url_discovered = asyncio.Event()
         self._echo_suppress_until = 0.0  # timestamp: ignore VAD until this time
+        self._auto_listen_deadline = 0.0  # auto-listen timeout
 
     async def start(self) -> None:
         """Initialize components and run the main loop."""
@@ -313,12 +314,30 @@ class SatelliteAgent:
 
     async def _process_listening(self, audio: bytes) -> None:
         """In LISTENING state: stream audio, check for end of speech."""
+        # Auto-listen timeout: if deadline passed without real speech, bail out
+        deadline = getattr(self, '_auto_listen_deadline', 0)
+        if deadline and time.monotonic() > deadline:
+            if not self.vad._in_speech:
+                logger.info("Auto-listen timeout — no speech detected, returning to IDLE")
+                self._auto_listen_deadline = 0
+                self.state = State.IDLE
+                self.led.set_pattern("idle")
+                self.vad.reset()
+                if self.ws.connected:
+                    await self.ws.send_audio_end("auto_listen_timeout")
+                    await self.ws.send_status("idle")
+                return
+
         if self.ws.connected:
             await self.ws.send_audio_chunk(audio)
 
         result = self.vad.process(audio)
+        if result == "speech_start" and deadline:
+            # Real speech detected — clear auto-listen deadline
+            self._auto_listen_deadline = 0
         if result == "speech_end":
             logger.info("Speech ended (VAD silence)")
+            self._auto_listen_deadline = 0
             await self._transition_to_processing()
 
     async def _transition_to_listening(self, confidence: float) -> None:
@@ -399,6 +418,7 @@ class SatelliteAgent:
             # Wait for echo to fully dissipate before listening
             await asyncio.sleep(1.5)
             if self.state == State.IDLE:  # not interrupted by something else
+                self._auto_listen_deadline = time.monotonic() + 4.0
                 await self._transition_to_listening(1.0)
             return
 

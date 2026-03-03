@@ -48,7 +48,7 @@ class SatelliteConfig:
     filler_enabled: bool = True
 
     # Silence detection
-    silence_threshold_frames: int = 20  # ~600ms at 30ms/frame
+    silence_threshold_frames: int = 15  # ~450ms at 30ms/frame
     speech_threshold_frames: int = 3  # ~90ms to confirm speech start
     max_speech_frames: int = 333  # ~10s max recording
 

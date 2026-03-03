@@ -317,6 +317,11 @@ async def _handle_audio_end(conn: SatelliteConnection, msg: dict) -> None:
         conn.satellite_id, reason, len(audio_data),
     )
 
+    # Auto-listen timeout means no one spoke — discard silently
+    if reason == "auto_listen_timeout":
+        logger.info("Auto-listen timeout from %s — no speech, discarding", conn.satellite_id)
+        return
+
     # Update session
     if conn.session_id:
         try:
@@ -369,18 +374,68 @@ def _is_hallucinated(transcript: str) -> bool:
         unique = set(s.lower() for s in segments)
         if len(unique) <= 2:
             return True
-    # Common whisper hallucinations on silence
-    lower = transcript.lower().strip()
-    hallucination_patterns = [
+    # Common whisper hallucinations on silence/noise
+    lower = transcript.lower().strip().rstrip(".")
+    hallucination_exact = {
         "thank you for watching",
         "thanks for watching",
         "please subscribe",
         "you",
         "...",
-    ]
-    if lower in hallucination_patterns:
+        "okay",
+        "thank you",
+        "thanks",
+        "bye",
+        "goodbye",
+        "hmm",
+    }
+    if lower in hallucination_exact:
+        return True
+    # Whisper commonly hallucinates "I'm going to go..." on noise
+    hallucination_prefixes = (
+        "i'm going to go",
+        "i'm going to get",
+        "i'm going to do",
+        "i'm going to take",
+        "i'm going to have",
+        "so i'm going to",
+        "and i'm going to",
+    )
+    if lower.startswith(hallucination_prefixes):
         return True
     return False
+
+
+# Generic LLM "help offer" closers that should NOT trigger auto-listen.
+_HELP_OFFER_PATTERNS = (
+    "what can i help",
+    "how can i help",
+    "how can i assist",
+    "what would you like",
+    "what do you need",
+    "what information are you looking for",
+    "what are you looking for",
+    "what else can i",
+    "anything else",
+    "is there anything else",
+    "what's the next question",
+    "what's your next question",
+    "need help with anything",
+    "what topic",
+    "what question",
+    "where would you like to go",
+    "what can i do for you",
+    "how may i help",
+    "what would you like to know",
+    "what do you want to know",
+    "what specific",
+)
+
+
+def _is_help_offer(sentence: str) -> bool:
+    """Return True if sentence is a generic LLM help-offer closer."""
+    lower = sentence.lower().strip()
+    return any(lower.startswith(p) or p in lower for p in _HELP_OFFER_PATTERNS)
 
 
 _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
@@ -680,13 +735,15 @@ async def _process_voice_pipeline(conn: SatelliteConnection, audio_data: bytes) 
         logger.info("Pipeline response for %s (LLM %.0fms): %r", satellite_id, llm_ms, full_response[:200])
 
         # ── Step 3: Final sentence + auto-listen ─────────────────
-        # Only auto-listen for direct questions to the user, not rhetorical
-        # questions or statements. Look for "?" at end of a short final sentence.
+        # Only auto-listen for DIRECT questions to the user (e.g. "Would you
+        # like me to set a timer?"), NOT generic LLM help-offer closers like
+        # "What can I help you with?" or "What information are you looking for?"
         last_sentence = full_response.rstrip().rsplit(".", 1)[-1].strip()
         is_question = (
             last_sentence.endswith("?")
             and len(last_sentence) < 100
             and not last_sentence.lower().startswith(("i wonder", "who knows"))
+            and not _is_help_offer(last_sentence)
         )
 
         if token_buf.strip():
