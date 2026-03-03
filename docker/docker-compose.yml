@@ -35,6 +35,7 @@ services:
       - STT_PORT=${STT_PORT:-10300}
       - CORTEX_DATA_DIR=/data
       - CORTEX_PORT=${CORTEX_PORT:-5100}
+      - TZ=${TZ:-America/New_York}
     depends_on:
       atlas-piper:
         condition: service_started

@@ -293,7 +293,21 @@ class SatelliteAgent:
     async def _process_idle(self, audio: bytes) -> None:
         """In IDLE state: check for wake word or VAD speech start."""
         if time.monotonic() < self._echo_suppress_until:
-            return  # Suppress echo after TTS playback
+            # Still suppressing echo — feed wake word model to flush its
+            # internal buffers (discard the result) and maintain VAD baseline.
+            if self.wake_word:
+                self.wake_word.process(audio)
+            if self.vad and self.vad.active:
+                self.vad.process(audio)
+            self._echo_active = True
+            return
+
+        # Just exited echo suppression — reset wake word to discard any
+        # residual high-confidence detections from speaker audio.
+        if getattr(self, '_echo_active', False):
+            self._echo_active = False
+            if self.wake_word:
+                self.wake_word.reset()
 
         if self.wake_word:
             # Feed VAD in idle to maintain ambient calibration
@@ -396,8 +410,10 @@ class SatelliteAgent:
             )
             self._tts_buffer.clear()
 
-        # Suppress echo: ignore VAD/wake for a short window after playback
-        self._echo_suppress_until = time.monotonic() + 1.5
+        # Suppress echo: ignore VAD/wake for a longer window after playback.
+        # The ReSpeaker mic picks up speaker audio which triggers openwakeword
+        # at very high confidence (0.99) — 1.5s is not enough.
+        self._echo_suppress_until = time.monotonic() + 3.0
 
         # Reset wake word model to clear internal audio buffers
         # (prevents TTS playback from triggering false wake detections)
