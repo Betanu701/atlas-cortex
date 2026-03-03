@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from .audio import AudioCapture, AudioPlayback
+from .button import ButtonHandler
 from .config import SatelliteConfig
 from .filler_cache import FillerCache
 from .led import LEDController, create_led
@@ -67,6 +68,7 @@ class SatelliteAgent:
         self.announcer: Optional[SatelliteAnnouncer] = None
         self.server_discovery: Optional[ServerDiscovery] = None
         self.fillers: Optional[FillerCache] = None
+        self.button: Optional[ButtonHandler] = None
 
         self._base_dir = base
         self._tts_buffer = bytearray()
@@ -118,6 +120,10 @@ class SatelliteAgent:
 
         self.led.set_pattern("idle")
 
+        # Start button handler (needs running event loop)
+        if self.button:
+            self.button.start(asyncio.get_event_loop())
+
         # Run concurrent loops
         try:
             await asyncio.gather(
@@ -138,6 +144,8 @@ class SatelliteAgent:
 
         if self.audio_in:
             self.audio_in.stop()
+        if self.button:
+            self.button.stop()
         if self.announcer:
             self.announcer.stop()
         if self.server_discovery:
@@ -213,6 +221,15 @@ class SatelliteAgent:
         # Filler cache
         cache_dir = self._base_dir / "cache" / "fillers"
         self.fillers = FillerCache(cache_dir)
+
+        # Button (ReSpeaker 2-mic HAT GPIO 17)
+        if cfg.button_enabled and cfg.led_type == "respeaker_2mic":
+            self.button = ButtonHandler(mode=cfg.button_mode)
+            self.button.register(
+                on_press=self._on_button_press,
+                on_release=self._on_button_release,
+                on_toggle=self._on_button_toggle,
+            )
 
         # Start audio capture
         try:
@@ -313,6 +330,9 @@ class SatelliteAgent:
             # Feed VAD in idle to maintain ambient calibration
             if self.vad and self.vad.active:
                 self.vad.process(audio)
+            # Skip wake word detection if button-toggled off
+            if self.button and not self.button.wake_word_enabled:
+                return
             # Wake word mode
             confidence = self.wake_word.process(audio)
             if confidence >= self.config.wake_word_threshold:
@@ -461,6 +481,34 @@ class SatelliteAgent:
         self.state = State.IDLE
         self.led.set_pattern("idle")
         self.vad.reset()
+
+    # ── Button callbacks ──────────────────────────────────────────
+
+    async def _on_button_press(self) -> None:
+        """Button pressed in 'press' or 'hold' mode → start listening."""
+        if self.state not in (State.IDLE, State.MUTED):
+            return
+        logger.info("Button: start listening")
+        self._echo_suppress_until = 0  # clear any echo suppression
+        await self._transition_to_listening(1.0)
+
+    async def _on_button_release(self) -> None:
+        """Button released in 'hold' mode → stop listening."""
+        if self.state != State.LISTENING:
+            return
+        logger.info("Button: stop listening (hold release)")
+        await self._transition_to_processing()
+
+    async def _on_button_toggle(self, enabled: bool) -> None:
+        """Button toggled wake word on/off."""
+        if enabled:
+            self.state = State.IDLE
+            self.led.set_pattern("idle")
+            logger.info("Button: wake word enabled")
+        else:
+            self.state = State.MUTED
+            self.led.set_pattern("muted")
+            logger.info("Button: wake word disabled (muted)")
 
     async def _on_command(self, msg: dict) -> None:
         """Execute a command from the server."""

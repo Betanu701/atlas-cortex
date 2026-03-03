@@ -739,6 +739,7 @@ class SatelliteUpdateRequest(BaseModel):
     vad_enabled: bool | None = None
     led_brightness: float | None = None
     audio_device_out: str | None = None
+    button_mode: str | None = None  # toggle | press | hold
 
 
 @router.get("/satellites")

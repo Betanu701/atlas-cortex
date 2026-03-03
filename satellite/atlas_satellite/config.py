@@ -44,6 +44,10 @@ class SatelliteConfig:
     # VAD control
     vad_enabled: bool = True  # when False, only wake word triggers listening
 
+    # Button (ReSpeaker 2-mic HAT GPIO 17)
+    button_enabled: bool = True
+    button_mode: str = "toggle"  # toggle | press | hold
+
     # Filler
     filler_enabled: bool = True
 
